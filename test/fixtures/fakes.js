@@ -27,6 +27,7 @@ function planilhaFake(opcoes) {
   const abas = {};
   const chamadas = [];
   const ocultas = {};
+  let ativa = null;
   return {
     _abas: abas,
     _chamadas: chamadas,
@@ -78,6 +79,14 @@ function planilhaFake(opcoes) {
     },
     notaAba(nome, texto) { chamadas.push({ metodo: 'notaAba', nome, texto }); return nome; },
     ordenarAbas(ordem) { chamadas.push({ metodo: 'ordenarAbas', ordem }); return ordem; },
+    ativarAba(nome) {
+      chamadas.push({ metodo: 'ativarAba', nome });
+      if (!abas[nome]) throw FOS.Core.DomainError('ABA_INEXISTENTE', 'Aba não encontrada: ' + nome);
+      ocultas[nome] = false;
+      ativa = nome;
+      return nome;
+    },
+    abaAtiva() { return ativa; },
     abaEstaOculta(nome) { return !!ocultas[nome]; },
     chamadasDe(metodo) { return chamadas.filter((c) => c.metodo === metodo); },
 

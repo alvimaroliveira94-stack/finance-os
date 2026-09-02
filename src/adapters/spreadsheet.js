@@ -199,6 +199,18 @@
         return nome;
       },
 
+      /**
+       * Reexibe (se preciso) e ativa uma aba. Navegação pura: não lê nem
+       * escreve dado nenhum. É o que permite manter as abas de entrada
+       * ocultas sem obrigar o usuário a caçá-las no menu do Sheets.
+       */
+      ativarAba: function (nome) {
+        var sheet = aba(nome);
+        if (sheet.isSheetHidden && sheet.isSheetHidden()) sheet.showSheet();
+        spreadsheet.setActiveSheet(sheet);
+        return nome;
+      },
+
       ocultarAba: function (nome, oculta) {
         var sheet = aba(nome);
         if (oculta) sheet.hideSheet();

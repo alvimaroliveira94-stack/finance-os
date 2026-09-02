@@ -58,7 +58,8 @@ const CENARIOS = [
   { id: 'C48', nome: 'Painel restrito e sem endpoint mutável' },
   { id: 'C49', nome: 'Publicação manual da taxa da competência' },
   { id: 'C50', nome: 'Evento manual inválido é recusado, nunca ignorado' },
-  { id: 'C51', nome: 'Parâmetro depreciado sai da configuração sem perder histórico' }
+  { id: 'C51', nome: 'Parâmetro depreciado sai da configuração sem perder histórico' },
+  { id: 'C52', nome: 'Superfície de quatro abas e fila totalmente abstraída' }
 ];
 
 module.exports = { CENARIOS };

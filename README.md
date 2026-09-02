@@ -143,8 +143,18 @@ fechamento vigente — nunca são uma segunda fonte de verdade.
 | `PLANEJAMENTO` | Custo de vida, provisões e objetivos versionados com ritmo observado e necessário. |
 | `PATRIMÔNIO` | Posições, totais por moeda, patrimônio gerencial e o capital de Trading em bloco separado. |
 
-Abas internas de motor ficam ocultas (o dono reexibe pelo menu do Sheets quando
-precisar); `00`, `11`, `12` e `21` seguem visíveis porque são operadas no dia a dia.
+**Essas quatro são as únicas abas permanentemente visíveis.** As treze internas ficam
+ocultas: são motor, não interface. Ocultar é cosmético — o Apps Script lê e escreve aba
+oculta normalmente.
+
+As três de digitação têm porta própria no menu, em **Abrir entrada ▸** (Eventos manuais,
+Saldos de trading, Configuração): o comando reexibe e ativa a aba, sem tocar em dado
+nenhum. **Atualizar abas** e **Preparar planilha** devolvem a superfície canônica.
+
+`21_FILA_REVISAO` deliberadamente **não** está nesse submenu: a fila é abstraída por
+inteiro por "Revisar pendências", que faz a pergunta certa para cada item — qual categoria,
+quando a movimentação não tem classificação; qual das movimentações candidatas, quando um
+evento casa com mais de uma.
 
 ### Painel HTML
 
@@ -271,9 +281,24 @@ Os meses fecham **em ordem cronológica**: o sistema recusa fechar um mês deixa
 um mês anterior com movimento ainda em aberto, porque o estado do ciclo depende de
 fechamentos consecutivos.
 
-O menu tem nove ações, em linguagem direta: Preparar planilha, Importar extrato,
-Revisar pendências, Reclassificar movimentação, Registrar evento, Publicar taxa do mês,
-Fechar mês, Abrir painel e Atualizar abas.
+O menu é agrupado por ritmo de uso — o mês inteiro em cima, na ordem em que acontece;
+a leitura no meio; correção, navegação e manutenção embaixo:
+
+```
+Finance OS
+├── Importar extrato
+├── Revisar pendências
+├── Registrar evento
+├── Publicar taxa do mês
+├── Fechar mês
+├──────────────────
+├── Abrir painel
+├── Atualizar abas
+├──────────────────
+├── Reclassificar movimentação
+├── Abrir entrada ▸ (Eventos manuais · Saldos de trading · Configuração)
+└── Preparar planilha
+```
 
 Escopos declarados no manifesto: `spreadsheets.currentonly`, `script.container.ui` e
 `drive.readonly` (necessário para ler o arquivo de extrato pelo nome). Se preferir escopo

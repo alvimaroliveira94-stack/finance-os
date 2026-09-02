@@ -659,8 +659,10 @@ describe('Abas visíveis', () => {
     assert.includes(protecoes[0].colunas, 'descricao');
     assert.ok(planilha.abaEstaOculta(A.LEDGER), 'o ledger fica oculto');
     assert.ok(planilha.abaEstaOculta(A.LOG));
-    assert.notOk(planilha.abaEstaOculta(A.EVENTOS_MANUAIS), 'as abas operacionais continuam visíveis');
-    assert.notOk(planilha.abaEstaOculta(A.FILA_REVISAO));
+    assert.ok(planilha.abaEstaOculta(A.EVENTOS_MANUAIS),
+      'toda aba interna fica oculta: a superfície permanente são as quatro de leitura');
+    assert.ok(planilha.abaEstaOculta(A.FILA_REVISAO),
+      'a fila é abstraída por "Revisar pendências"');
     assert.notOk(planilha.abaEstaOculta(V.HOME));
   });
 

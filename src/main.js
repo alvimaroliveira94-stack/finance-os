@@ -38,20 +38,30 @@ function _fosUi() {
   return SpreadsheetApp.getUi();
 }
 
-/** Menu curto, em linguagem humana. Toda ação é manual e explícita. */
+/**
+ * Menu curto, em linguagem humana. Toda ação é manual e explícita.
+ *
+ * Agrupado por ritmo de uso: o mês inteiro em cima, na ordem em que acontece;
+ * a leitura no meio; correção, navegação e manutenção embaixo.
+ */
 function onOpen() {
-  _fosUi()
-    .createMenu('Finance OS')
-    .addItem('Preparar planilha', 'fosSetup')
+  var ui = _fosUi();
+  ui.createMenu('Finance OS')
     .addItem('Importar extrato', 'fosImportarExtrato')
     .addItem('Revisar pendências', 'fosRevisarPendencias')
-    .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
     .addItem('Registrar evento', 'fosRegistrarEvento')
     .addItem('Publicar taxa do mês', 'fosPublicarTaxaCambio')
     .addItem('Fechar mês', 'fosFecharMes')
     .addSeparator()
     .addItem('Abrir painel', 'fosAbrirPainel')
     .addItem('Atualizar abas', 'fosAtualizarAbas')
+    .addSeparator()
+    .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
+    .addSubMenu(ui.createMenu('Abrir entrada')
+      .addItem('Eventos manuais', 'fosAbrirEventosManuais')
+      .addItem('Saldos de trading', 'fosAbrirSaldosTrading')
+      .addItem('Configuração', 'fosAbrirConfiguracao'))
+    .addItem('Preparar planilha', 'fosSetup')
     .addToUi();
 }
 
@@ -113,33 +123,176 @@ function fosImportarExtrato() {
 }
 
 /** Revisar pendências: mostra a fila e explica como resolver. */
+/** Valor legível numa linha de diálogo. */
+function _fosValor(n) {
+  if (n === null || n === undefined || n === '') return '?';
+  return Number(n).toFixed(2);
+}
+
+/**
+ * Texto do diálogo de uma pendência.
+ *
+ * Recebe a estrutura devolvida por Queue.decisaoPendente e só formata: a
+ * regra de qual pergunta fazer vive no domínio, não aqui.
+ */
+function _fosTextoPendencia(pendente, indice, total) {
+  var linhas = ['Item ' + indice + ' de ' + total + '  (' + pendente.motivo + ')', ''];
+
+  if (pendente.tipo === 'CANDIDATA') {
+    var e = pendente.evento;
+    linhas.push('Este evento casa com mais de uma movimentação:');
+    linhas.push(e
+      ? '  ' + e.data + '  ' + e.tipo_evento + '  ' + _fosValor(e.valor) + ' ' + e.moeda
+        + (e.descricao ? '  ' + e.descricao : '')
+      : '  evento ' + pendente.referencia);
+    linhas.push('');
+    linhas.push('Candidatas:');
+    pendente.candidatos.forEach(function (c) {
+      linhas.push('  ' + c.indice + ') ' + c.data + '  ' + _fosValor(c.valor)
+        + (c.descricao ? '  ' + c.descricao : '')
+        + (c.conta ? '  [' + c.conta + ']' : ''));
+    });
+    linhas.push('');
+    linhas.push('Escreva o número da movimentação que corresponde ao evento.');
+  } else {
+    var m = pendente.movimentacao;
+    linhas.push('Movimentação sem classificação definida:');
+    linhas.push(m
+      ? '  ' + m.data + '  ' + _fosValor(m.valor) + '  ' + (m.descricao || '(sem descrição)')
+        + (m.conta ? '  [' + m.conta + ']' : '')
+      : '  ' + (pendente.detalhe || pendente.referencia));
+    linhas.push('');
+    linhas.push('Escreva a categoria:');
+    linhas.push('  ' + pendente.opcoes.join(', '));
+  }
+
+  linhas.push('');
+  linhas.push('Ou escreva DESCARTAR para arquivar este item sem aplicar nada.');
+  linhas.push('Cancelar encerra a revisão e mantém o item em aberto.');
+  return linhas.join('\n');
+}
+
+/**
+ * Revisar pendências: única porta para a fila de revisão (aba 21).
+ *
+ * A aba fica oculta de propósito. Este comando percorre TODOS os itens
+ * abertos e faz, para cada um, a pergunta que a origem dele exige:
+ *
+ *  - CLASSIFICACAO -> qual categoria canônica;
+ *  - CONCILIACAO   -> qual das movimentações candidatas casa com o evento.
+ *
+ * O defeito que isto corrige: antes o comando mandava sempre CLASSIFICAR e
+ * usava a referência do item como se fosse fingerprint de linha. Num item de
+ * conciliação a referência é um evento_id, então a resolução falhava com
+ * LINHA_INEXISTENTE, o item ficava aberto — e item aberto impede fechar o mês.
+ *
+ * Cancelar nunca resolve nada: encerra a revisão com o item ainda ABERTO.
+ * Resposta inválida também não resolve, e aparece no resumo final.
+ */
 function fosRevisarPendencias() {
+  var ui = _fosUi();
   var amb = _fosAmbiente();
   var abertos = FOS.Queue.abertos(amb.repositorio.fila());
-  var ui = _fosUi();
+
   if (!abertos.length) {
     ui.alert('Revisar pendências', 'Nada pendente. A fila de revisão está vazia.', ui.ButtonSet.OK);
     return;
   }
-  var item = abertos[0];
-  var resposta = ui.prompt(
-    'Revisar pendências (' + abertos.length + ' item(ns))',
-    'Item: ' + item.item_id + '\nMotivo: ' + item.motivo + '\nDetalhe: ' + item.detalhe
-      + '\n\nEscreva a categoria escolhida:\n' + FOS.Constants.values(FOS.Constants.CATEGORIA).join(', '),
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (resposta.getSelectedButton() !== ui.Button.OK) return;
-  try {
-    amb.workflows.resolverItemFila({
-      item_id: item.item_id,
-      decisao: 'CLASSIFICAR',
-      categoria: resposta.getResponseText().trim().toUpperCase(),
-      ator: 'USUARIO'
-    });
-    ui.alert('Pendência resolvida', 'Restam ' + (abertos.length - 1) + ' item(ns).', ui.ButtonSet.OK);
-  } catch (e) {
-    ui.alert('Não foi possível resolver', e.message, ui.ButtonSet.OK);
+
+  var contexto = {
+    linhas: FOS.Ledger.visaoCorrente(amb.repositorio.ledger()),
+    staging: amb.repositorio.staging(),
+    eventos: amb.repositorio.eventos()
+  };
+
+  var resolvidos = 0;
+  var descartados = 0;
+  var naoAplicados = [];
+  var cancelado = false;
+
+  for (var i = 0; i < abertos.length; i++) {
+    var pendente = FOS.Queue.decisaoPendente(abertos[i], contexto);
+    var resposta = ui.prompt(
+      'Revisar pendências',
+      _fosTextoPendencia(pendente, i + 1, abertos.length),
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (resposta.getSelectedButton() !== ui.Button.OK) {
+      cancelado = true;
+      break;
+    }
+
+    var leitura = FOS.Queue.interpretarResposta(pendente, resposta.getResponseText());
+    if (!leitura.ok) {
+      naoAplicados.push(pendente.item_id + ': ' + leitura.erro);
+      continue;
+    }
+    try {
+      amb.workflows.resolverItemFila(
+        _fosComAtor(leitura.params)
+      );
+      if (leitura.descartado) descartados++;
+      else resolvidos++;
+    } catch (e) {
+      naoAplicados.push(pendente.item_id + ': ' + (e.code || 'ERRO') + ' - ' + e.message);
+    }
   }
+
+  var restantes = FOS.Queue.abertos(amb.repositorio.fila()).length;
+  var resumo = [
+    'Resolvidos: ' + resolvidos,
+    'Descartados: ' + descartados,
+    'Ainda abertos: ' + restantes
+  ];
+  if (cancelado) {
+    resumo.push('');
+    resumo.push('Revisão encerrada por você. Nenhum item pendente foi alterado.');
+  }
+  if (naoAplicados.length) {
+    resumo.push('');
+    resumo.push('Não aplicados (' + naoAplicados.length + '):');
+    naoAplicados.slice(0, 10).forEach(function (t) { resumo.push('- ' + t); });
+    if (naoAplicados.length > 10) resumo.push('- ... e mais ' + (naoAplicados.length - 10) + '.');
+  }
+  if (restantes) {
+    resumo.push('');
+    resumo.push('Enquanto houver item aberto, o mês não fecha. Rode este comando de novo.');
+  }
+  ui.alert('Revisar pendências', resumo.join('\n'), ui.ButtonSet.OK);
+}
+
+/** Toda resolução de fila é ato do usuário, não do ambiente. */
+function _fosComAtor(params) {
+  params.ator = 'USUARIO';
+  return params;
+}
+
+/**
+ * Abrir entrada: reexibe e ativa uma das três abas de digitação.
+ *
+ * Navegação pura — nenhum dado é lido ou escrito. Existe para que a
+ * superfície permanente possa ser só as quatro abas de leitura sem obrigar
+ * ninguém a caçar aba oculta no menu do Sheets.
+ */
+function _fosAbrirEntrada(nome) {
+  var amb = _fosAmbiente();
+  try {
+    FOS.App.Bootstrap.abrirEntrada(amb.planilha, nome);
+  } catch (e) {
+    _fosUi().alert('Abrir entrada', e.message, _fosUi().ButtonSet.OK);
+  }
+}
+
+function fosAbrirEventosManuais() {
+  _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.EVENTOS);
+}
+
+function fosAbrirSaldosTrading() {
+  _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.SALDOS);
+}
+
+function fosAbrirConfiguracao() {
+  _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.CONFIGURACAO);
 }
 
 /**

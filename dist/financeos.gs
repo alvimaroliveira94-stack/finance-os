@@ -1634,7 +1634,179 @@
     return novo;
   }
 
-  FOS.Queue = { novoItem: novoItem, itemId: itemId, abertos: abertos, resolver: resolver };
+  var DESCARTAR = 'DESCARTAR';
+
+  function numero(v) {
+    var n = FOS.Config.parseNumber(v);
+    return n === null ? null : n;
+  }
+
+  /** Texto curto de uma linha do ledger ou do staging, para leitura humana. */
+  function resumoDeLinha(linha) {
+    if (!linha) return null;
+    return {
+      fingerprint: String(linha.fingerprint || ''),
+      data: String(linha.data_origem || linha.data || ''),
+      descricao: String(linha.descricao_origem || linha.descricao_original || linha.descricao || ''),
+      valor: numero(linha.valor_origem !== undefined ? linha.valor_origem : linha.valor),
+      conta: String(linha.conta_id || linha.conta || '')
+    };
+  }
+
+  function acharPorFingerprint(lista, fingerprint) {
+    var alvo = String(fingerprint || '');
+    return (lista || []).filter(function (l) {
+      return String(l.fingerprint || '') === alvo;
+    })[0] || null;
+  }
+
+  /**
+   * Traduz um item da fila na decisão que precisa ser tomada.
+   *
+   * Devolve estrutura, nunca texto de interface: quem monta o diálogo é o
+   * ponto de entrada. Isso mantém a regra — qual pergunta fazer para cada
+   * origem — testável sem simular a planilha.
+   *
+   * A distinção que importa: em CLASSIFICACAO a `referencia` do item é o
+   * fingerprint de uma movimentação; em CONCILIACAO é o id de um EVENTO, e o
+   * fingerprint tem de sair da candidata escolhida pelo usuário. Confundir os
+   * dois foi exatamente o defeito que este desenho elimina.
+   *
+   * @param {Object} item linha da aba 21
+   * @param {{linhas?:Array, staging?:Array, eventos?:Array}} [contexto]
+   */
+  function decisaoPendente(item, contexto) {
+    var ctx = contexto || {};
+    var origem = String(item.origem || '').toUpperCase();
+    var base = {
+      item_id: String(item.item_id || ''),
+      origem: origem,
+      motivo: String(item.motivo || ''),
+      detalhe: String(item.detalhe || ''),
+      referencia: String(item.referencia || '')
+    };
+
+    if (origem === C.ORIGEM_FILA.CONCILIACAO) {
+      var evento = (ctx.eventos || []).filter(function (e) {
+        return String(e.evento_id || '') === base.referencia;
+      })[0] || null;
+      var brutos = [];
+      try {
+        brutos = item.candidatos ? JSON.parse(item.candidatos) : [];
+      } catch (e) {
+        brutos = [];
+      }
+      var candidatos = (brutos || []).map(function (c, i) {
+        // A candidata guardada tem fingerprint, data e valor. A descrição vem
+        // do ledger na hora de perguntar — é o que torna a escolha humana.
+        var doLedger = resumoDeLinha(acharPorFingerprint(ctx.linhas, c.fingerprint));
+        return {
+          indice: i + 1,
+          fingerprint: String(c.fingerprint || ''),
+          data: String(c.data || (doLedger && doLedger.data) || ''),
+          valor: numero(c.valor !== undefined ? c.valor : (doLedger && doLedger.valor)),
+          descricao: doLedger ? doLedger.descricao : '',
+          conta: doLedger ? doLedger.conta : ''
+        };
+      }).filter(function (c) { return c.fingerprint; });
+
+      return Object.assign(base, {
+        tipo: 'CANDIDATA',
+        evento: evento ? {
+          evento_id: String(evento.evento_id || ''),
+          tipo_evento: String(evento.tipo_evento || ''),
+          data: String(evento.data || ''),
+          valor: numero(evento.valor),
+          moeda: String(evento.moeda || ''),
+          descricao: String(evento.descricao || '')
+        } : null,
+        candidatos: candidatos,
+        opcoes: candidatos.map(function (c) { return String(c.indice); })
+      });
+    }
+
+    // CLASSIFICACAO e IMPORTACAO: a referência é a própria movimentação.
+    var linha = resumoDeLinha(
+      acharPorFingerprint(ctx.staging, base.referencia)
+      || acharPorFingerprint(ctx.linhas, base.referencia));
+    return Object.assign(base, {
+      tipo: 'CATEGORIA',
+      movimentacao: linha,
+      candidatos: [],
+      opcoes: C.values(C.CATEGORIA)
+    });
+  }
+
+  /**
+   * Converte a resposta do usuário nos parâmetros de resolverItemFila.
+   *
+   * Recusa o que não entende em vez de chutar: resposta inválida devolve
+   * {ok:false, erro} e o item continua ABERTO. Nunca devolve a referência do
+   * item como se fosse o fingerprint de uma candidata.
+   *
+   * @returns {{ok:boolean, params?:Object, erro?:string, descartado?:boolean}}
+   */
+  function interpretarResposta(pendente, texto) {
+    var resposta = String(texto === undefined || texto === null ? '' : texto).trim();
+    if (!resposta) {
+      return { ok: false, erro: 'RESPOSTA_VAZIA' };
+    }
+    if (resposta.toUpperCase() === DESCARTAR) {
+      return {
+        ok: true,
+        descartado: true,
+        params: { item_id: pendente.item_id, decisao: DESCARTAR }
+      };
+    }
+
+    if (pendente.tipo === 'CANDIDATA') {
+      if (!pendente.candidatos.length) {
+        return { ok: false, erro: 'SEM_CANDIDATAS' };
+      }
+      var indice = FOS.Config.parseNumber(resposta);
+      var escolhida = null;
+      if (indice !== null) {
+        escolhida = pendente.candidatos.filter(function (c) { return c.indice === indice; })[0] || null;
+      }
+      if (!escolhida) {
+        // Também aceita colar o fingerprint, inteiro ou abreviado.
+        escolhida = pendente.candidatos.filter(function (c) {
+          return c.fingerprint === resposta || c.fingerprint.slice(0, 12) === resposta;
+        })[0] || null;
+      }
+      if (!escolhida) {
+        return { ok: false, erro: 'CANDIDATA_INVALIDA:' + resposta };
+      }
+      return {
+        ok: true,
+        escolhida: escolhida,
+        params: {
+          item_id: pendente.item_id,
+          decisao: 'CONCILIAR',
+          fingerprint: escolhida.fingerprint
+        }
+      };
+    }
+
+    var categoria = resposta.toUpperCase();
+    if (!C.isValid(C.CATEGORIA, categoria)) {
+      return { ok: false, erro: 'CATEGORIA_NAO_CANONICA:' + resposta };
+    }
+    return {
+      ok: true,
+      params: { item_id: pendente.item_id, decisao: 'CLASSIFICAR', categoria: categoria }
+    };
+  }
+
+  FOS.Queue = {
+    DESCARTAR: DESCARTAR,
+    novoItem: novoItem,
+    itemId: itemId,
+    abertos: abertos,
+    resolver: resolver,
+    decisaoPendente: decisaoPendente,
+    interpretarResposta: interpretarResposta
+  };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 /* ===== src/domain/ledger.js ===== */
@@ -5089,6 +5261,18 @@
         return nome;
       },
 
+      /**
+       * Reexibe (se preciso) e ativa uma aba. Navegação pura: não lê nem
+       * escreve dado nenhum. É o que permite manter as abas de entrada
+       * ocultas sem obrigar o usuário a caçá-las no menu do Sheets.
+       */
+      ativarAba: function (nome) {
+        var sheet = aba(nome);
+        if (sheet.isSheetHidden && sheet.isSheetHidden()) sheet.showSheet();
+        spreadsheet.setActiveSheet(sheet);
+        return nome;
+      },
+
       ocultarAba: function (nome, oculta) {
         var sheet = aba(nome);
         if (oculta) sheet.hideSheet();
@@ -5843,14 +6027,34 @@
     }
   ];
 
-  /** Abas internas ficam ocultas por padrão: são motor, não interface. */
+  /**
+   * TODA aba interna fica oculta: são motor, não interface.
+   *
+   * A superfície permanente é só HOME, MOVIMENTAÇÕES, PLANEJAMENTO e
+   * PATRIMÔNIO. Ocultar não tira acesso — o Apps Script lê e escreve aba
+   * oculta normalmente, e o menu reexibe sob demanda as três de entrada.
+   */
   var ABAS_INTERNAS_OCULTAS = [
-    A.IMPORT_EXTRATO, A.REGRAS, A.LEDGER, A.PROVISOES, A.OBJETIVOS,
+    A.CONFIG, A.IMPORT_EXTRATO, A.EVENTOS_MANUAIS, A.SALDOS_TRADING,
+    A.REGRAS, A.FILA_REVISAO, A.LEDGER, A.PROVISOES, A.OBJETIVOS,
     A.POSICOES, A.FECHAMENTOS, A.RESTATEMENTS, A.LOG
   ];
 
-  /** Abas internas que o usuário usa no dia a dia continuam visíveis. */
-  var ABAS_INTERNAS_OPERACIONAIS = [A.CONFIG, A.EVENTOS_MANUAIS, A.SALDOS_TRADING, A.FILA_REVISAO];
+  /**
+   * As três abas que o menu sabe reexibir e ativar ("Abrir entrada").
+   *
+   * 11 e 12 são as duas únicas abas do workbook que o sistema nunca escreve:
+   * entrada humana pura, em lote, e por isso continuam sendo tabela e não
+   * formulário. 00 é setup raro (cadastro de conta).
+   *
+   * 21_FILA_REVISAO NÃO entra aqui de propósito: a fila é abstraída por
+   * "Revisar pendências" e o usuário não deve precisar operá-la direto.
+   */
+  var ABAS_DE_ENTRADA = {
+    EVENTOS: A.EVENTOS_MANUAIS,
+    SALDOS: A.SALDOS_TRADING,
+    CONFIGURACAO: A.CONFIG
+  };
 
   /**
    * Listas fechadas nas abas internas de digitação.
@@ -5934,19 +6138,47 @@
   }
 
   /**
-   * Organiza o workbook: superfícies primeiro, abas operacionais depois,
-   * motor oculto. Ocultar não impede manutenção — o dono reexibe a aba
-   * pelo menu do Sheets a qualquer momento.
+   * Restaura a superfície canônica: as quatro visíveis, todo o resto oculto.
+   *
+   * Idempotente e barata (só visibilidade, sem reordenar). É o que "Atualizar
+   * abas" chama para devolver a planilha ao estado limpo depois de o usuário
+   * ter aberto uma aba de entrada.
+   */
+  function restaurarSuperficie(planilha) {
+    if (!planilha.ocultarAba) return [];
+    ABAS_VISIVEIS.forEach(function (aba) { planilha.ocultarAba(aba.nome, false); });
+    ABAS_INTERNAS_OCULTAS.forEach(function (nome) { planilha.ocultarAba(nome, true); });
+    return ABAS_INTERNAS_OCULTAS.slice();
+  }
+
+  /**
+   * Organiza o workbook: superfícies primeiro, motor depois e oculto.
+   * Ocultar não impede manutenção — o dono reexibe a aba pelo menu do Sheets,
+   * e as três de entrada têm comando próprio no menu Finance OS.
    */
   function organizarAbas(planilha) {
     if (!planilha.ocultarAba) return [];
     var ordem = ABAS_VISIVEIS.map(function (a) { return a.nome; })
-      .concat(ABAS_INTERNAS_OPERACIONAIS)
       .concat(ABAS_INTERNAS_OCULTAS);
     if (planilha.ordenarAbas) planilha.ordenarAbas(ordem);
-    ABAS_INTERNAS_OCULTAS.forEach(function (nome) { planilha.ocultarAba(nome, true); });
-    ABAS_INTERNAS_OPERACIONAIS.forEach(function (nome) { planilha.ocultarAba(nome, false); });
+    restaurarSuperficie(planilha);
     return ordem;
+  }
+
+  /**
+   * Reexibe e ativa uma das abas de entrada. Navegação, nunca escrita.
+   * Recusa qualquer aba fora da lista: a fila de revisão e o motor não são
+   * pontos de entrada.
+   */
+  function abrirEntrada(planilha, nome) {
+    var permitidas = Object.keys(ABAS_DE_ENTRADA).map(function (k) { return ABAS_DE_ENTRADA[k]; });
+    if (permitidas.indexOf(nome) === -1) {
+      FOS.Core.fail('ABA_NAO_E_ENTRADA',
+        'Esta aba não é um ponto de entrada: ' + nome,
+        { permitidas: permitidas });
+    }
+    if (!planilha.ativarAba) FOS.Core.fail('NAVEGACAO_INDISPONIVEL', 'A planilha não sabe ativar abas');
+    return planilha.ativarAba(nome);
   }
 
   /** Semeia 00 e 20 apenas se estiverem vazias (nunca sobrescreve). */
@@ -5999,13 +6231,15 @@
   FOS.App.Bootstrap = {
     ABAS_VISIVEIS: ABAS_VISIVEIS,
     ABAS_INTERNAS_OCULTAS: ABAS_INTERNAS_OCULTAS,
-    ABAS_INTERNAS_OPERACIONAIS: ABAS_INTERNAS_OPERACIONAIS,
+    ABAS_DE_ENTRADA: ABAS_DE_ENTRADA,
     VALIDACOES_OPERACIONAIS: VALIDACOES_OPERACIONAIS,
     criarEstrutura: criarEstrutura,
     formatarSuperficies: formatarSuperficies,
     validarAbasOperacionais: validarAbasOperacionais,
     depreciarParametros: depreciarParametros,
     organizarAbas: organizarAbas,
+    restaurarSuperficie: restaurarSuperficie,
+    abrirEntrada: abrirEntrada,
     semear: semear,
     inicializar: inicializar
   };
@@ -7543,6 +7777,12 @@
       if (opts.formatar !== false && repo.planilha.formatarAba) {
         FOS.App.Bootstrap.formatarSuperficies(repo.planilha);
       }
+      // Devolve a planilha à superfície canônica: as quatro abas visíveis e o
+      // resto oculto. O usuário pode ter aberto uma aba de entrada pelo menu;
+      // atualizar as abas é o momento natural de voltar ao estado limpo.
+      var ocultadas = opts.restaurar === false
+        ? []
+        : FOS.App.Bootstrap.restaurarSuperficie(repo.planilha);
 
       auditoria.registrar({
         acao: 'ATUALIZAR_SUPERFICIES',
@@ -7554,13 +7794,14 @@
           movimentacoes: linhas.MOVIMENTACOES.length,
           planejamento: linhas.PLANEJAMENTO.length,
           patrimonio: linhas.PATRIMONIO.length,
-          status: dadosPainel.atual.status
+          status: dadosPainel.atual.status,
+          abas_ocultadas: ocultadas.length
         },
         resultado: 'OK',
         detalhe: { competencia: competencia || 'ULTIMO_FECHAMENTO' }
       });
       auditoria.persistir();
-      return { painel: dadosPainel, linhas: linhas };
+      return { painel: dadosPainel, linhas: linhas, ocultadas: ocultadas };
     }
 
     return {
@@ -7638,20 +7879,30 @@ function _fosUi() {
   return SpreadsheetApp.getUi();
 }
 
-/** Menu curto, em linguagem humana. Toda ação é manual e explícita. */
+/**
+ * Menu curto, em linguagem humana. Toda ação é manual e explícita.
+ *
+ * Agrupado por ritmo de uso: o mês inteiro em cima, na ordem em que acontece;
+ * a leitura no meio; correção, navegação e manutenção embaixo.
+ */
 function onOpen() {
-  _fosUi()
-    .createMenu('Finance OS')
-    .addItem('Preparar planilha', 'fosSetup')
+  var ui = _fosUi();
+  ui.createMenu('Finance OS')
     .addItem('Importar extrato', 'fosImportarExtrato')
     .addItem('Revisar pendências', 'fosRevisarPendencias')
-    .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
     .addItem('Registrar evento', 'fosRegistrarEvento')
     .addItem('Publicar taxa do mês', 'fosPublicarTaxaCambio')
     .addItem('Fechar mês', 'fosFecharMes')
     .addSeparator()
     .addItem('Abrir painel', 'fosAbrirPainel')
     .addItem('Atualizar abas', 'fosAtualizarAbas')
+    .addSeparator()
+    .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
+    .addSubMenu(ui.createMenu('Abrir entrada')
+      .addItem('Eventos manuais', 'fosAbrirEventosManuais')
+      .addItem('Saldos de trading', 'fosAbrirSaldosTrading')
+      .addItem('Configuração', 'fosAbrirConfiguracao'))
+    .addItem('Preparar planilha', 'fosSetup')
     .addToUi();
 }
 
@@ -7713,33 +7964,176 @@ function fosImportarExtrato() {
 }
 
 /** Revisar pendências: mostra a fila e explica como resolver. */
+/** Valor legível numa linha de diálogo. */
+function _fosValor(n) {
+  if (n === null || n === undefined || n === '') return '?';
+  return Number(n).toFixed(2);
+}
+
+/**
+ * Texto do diálogo de uma pendência.
+ *
+ * Recebe a estrutura devolvida por Queue.decisaoPendente e só formata: a
+ * regra de qual pergunta fazer vive no domínio, não aqui.
+ */
+function _fosTextoPendencia(pendente, indice, total) {
+  var linhas = ['Item ' + indice + ' de ' + total + '  (' + pendente.motivo + ')', ''];
+
+  if (pendente.tipo === 'CANDIDATA') {
+    var e = pendente.evento;
+    linhas.push('Este evento casa com mais de uma movimentação:');
+    linhas.push(e
+      ? '  ' + e.data + '  ' + e.tipo_evento + '  ' + _fosValor(e.valor) + ' ' + e.moeda
+        + (e.descricao ? '  ' + e.descricao : '')
+      : '  evento ' + pendente.referencia);
+    linhas.push('');
+    linhas.push('Candidatas:');
+    pendente.candidatos.forEach(function (c) {
+      linhas.push('  ' + c.indice + ') ' + c.data + '  ' + _fosValor(c.valor)
+        + (c.descricao ? '  ' + c.descricao : '')
+        + (c.conta ? '  [' + c.conta + ']' : ''));
+    });
+    linhas.push('');
+    linhas.push('Escreva o número da movimentação que corresponde ao evento.');
+  } else {
+    var m = pendente.movimentacao;
+    linhas.push('Movimentação sem classificação definida:');
+    linhas.push(m
+      ? '  ' + m.data + '  ' + _fosValor(m.valor) + '  ' + (m.descricao || '(sem descrição)')
+        + (m.conta ? '  [' + m.conta + ']' : '')
+      : '  ' + (pendente.detalhe || pendente.referencia));
+    linhas.push('');
+    linhas.push('Escreva a categoria:');
+    linhas.push('  ' + pendente.opcoes.join(', '));
+  }
+
+  linhas.push('');
+  linhas.push('Ou escreva DESCARTAR para arquivar este item sem aplicar nada.');
+  linhas.push('Cancelar encerra a revisão e mantém o item em aberto.');
+  return linhas.join('\n');
+}
+
+/**
+ * Revisar pendências: única porta para a fila de revisão (aba 21).
+ *
+ * A aba fica oculta de propósito. Este comando percorre TODOS os itens
+ * abertos e faz, para cada um, a pergunta que a origem dele exige:
+ *
+ *  - CLASSIFICACAO -> qual categoria canônica;
+ *  - CONCILIACAO   -> qual das movimentações candidatas casa com o evento.
+ *
+ * O defeito que isto corrige: antes o comando mandava sempre CLASSIFICAR e
+ * usava a referência do item como se fosse fingerprint de linha. Num item de
+ * conciliação a referência é um evento_id, então a resolução falhava com
+ * LINHA_INEXISTENTE, o item ficava aberto — e item aberto impede fechar o mês.
+ *
+ * Cancelar nunca resolve nada: encerra a revisão com o item ainda ABERTO.
+ * Resposta inválida também não resolve, e aparece no resumo final.
+ */
 function fosRevisarPendencias() {
+  var ui = _fosUi();
   var amb = _fosAmbiente();
   var abertos = FOS.Queue.abertos(amb.repositorio.fila());
-  var ui = _fosUi();
+
   if (!abertos.length) {
     ui.alert('Revisar pendências', 'Nada pendente. A fila de revisão está vazia.', ui.ButtonSet.OK);
     return;
   }
-  var item = abertos[0];
-  var resposta = ui.prompt(
-    'Revisar pendências (' + abertos.length + ' item(ns))',
-    'Item: ' + item.item_id + '\nMotivo: ' + item.motivo + '\nDetalhe: ' + item.detalhe
-      + '\n\nEscreva a categoria escolhida:\n' + FOS.Constants.values(FOS.Constants.CATEGORIA).join(', '),
-    ui.ButtonSet.OK_CANCEL
-  );
-  if (resposta.getSelectedButton() !== ui.Button.OK) return;
-  try {
-    amb.workflows.resolverItemFila({
-      item_id: item.item_id,
-      decisao: 'CLASSIFICAR',
-      categoria: resposta.getResponseText().trim().toUpperCase(),
-      ator: 'USUARIO'
-    });
-    ui.alert('Pendência resolvida', 'Restam ' + (abertos.length - 1) + ' item(ns).', ui.ButtonSet.OK);
-  } catch (e) {
-    ui.alert('Não foi possível resolver', e.message, ui.ButtonSet.OK);
+
+  var contexto = {
+    linhas: FOS.Ledger.visaoCorrente(amb.repositorio.ledger()),
+    staging: amb.repositorio.staging(),
+    eventos: amb.repositorio.eventos()
+  };
+
+  var resolvidos = 0;
+  var descartados = 0;
+  var naoAplicados = [];
+  var cancelado = false;
+
+  for (var i = 0; i < abertos.length; i++) {
+    var pendente = FOS.Queue.decisaoPendente(abertos[i], contexto);
+    var resposta = ui.prompt(
+      'Revisar pendências',
+      _fosTextoPendencia(pendente, i + 1, abertos.length),
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (resposta.getSelectedButton() !== ui.Button.OK) {
+      cancelado = true;
+      break;
+    }
+
+    var leitura = FOS.Queue.interpretarResposta(pendente, resposta.getResponseText());
+    if (!leitura.ok) {
+      naoAplicados.push(pendente.item_id + ': ' + leitura.erro);
+      continue;
+    }
+    try {
+      amb.workflows.resolverItemFila(
+        _fosComAtor(leitura.params)
+      );
+      if (leitura.descartado) descartados++;
+      else resolvidos++;
+    } catch (e) {
+      naoAplicados.push(pendente.item_id + ': ' + (e.code || 'ERRO') + ' - ' + e.message);
+    }
   }
+
+  var restantes = FOS.Queue.abertos(amb.repositorio.fila()).length;
+  var resumo = [
+    'Resolvidos: ' + resolvidos,
+    'Descartados: ' + descartados,
+    'Ainda abertos: ' + restantes
+  ];
+  if (cancelado) {
+    resumo.push('');
+    resumo.push('Revisão encerrada por você. Nenhum item pendente foi alterado.');
+  }
+  if (naoAplicados.length) {
+    resumo.push('');
+    resumo.push('Não aplicados (' + naoAplicados.length + '):');
+    naoAplicados.slice(0, 10).forEach(function (t) { resumo.push('- ' + t); });
+    if (naoAplicados.length > 10) resumo.push('- ... e mais ' + (naoAplicados.length - 10) + '.');
+  }
+  if (restantes) {
+    resumo.push('');
+    resumo.push('Enquanto houver item aberto, o mês não fecha. Rode este comando de novo.');
+  }
+  ui.alert('Revisar pendências', resumo.join('\n'), ui.ButtonSet.OK);
+}
+
+/** Toda resolução de fila é ato do usuário, não do ambiente. */
+function _fosComAtor(params) {
+  params.ator = 'USUARIO';
+  return params;
+}
+
+/**
+ * Abrir entrada: reexibe e ativa uma das três abas de digitação.
+ *
+ * Navegação pura — nenhum dado é lido ou escrito. Existe para que a
+ * superfície permanente possa ser só as quatro abas de leitura sem obrigar
+ * ninguém a caçar aba oculta no menu do Sheets.
+ */
+function _fosAbrirEntrada(nome) {
+  var amb = _fosAmbiente();
+  try {
+    FOS.App.Bootstrap.abrirEntrada(amb.planilha, nome);
+  } catch (e) {
+    _fosUi().alert('Abrir entrada', e.message, _fosUi().ButtonSet.OK);
+  }
+}
+
+function fosAbrirEventosManuais() {
+  _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.EVENTOS);
+}
+
+function fosAbrirSaldosTrading() {
+  _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.SALDOS);
+}
+
+function fosAbrirConfiguracao() {
+  _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.CONFIGURACAO);
 }
 
 /**

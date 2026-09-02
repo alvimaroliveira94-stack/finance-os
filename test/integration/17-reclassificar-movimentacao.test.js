@@ -50,11 +50,12 @@ function linhaPorValor(ctx, valor) {
 }
 
 describe('Ponto de entrada: Reclassificar movimentação', () => {
-  it('está no menu, entre revisar e registrar', { scenario: 'C46' }, () => {
+  it('está no menu, no bloco de correção e navegação', { scenario: 'C46' }, () => {
     assert.includes(MAIN, "addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')");
-    const menu = MAIN.slice(MAIN.indexOf('function onOpen'), MAIN.indexOf('function fosSetup'));
-    assert.ok(menu.indexOf('Revisar pendências') < menu.indexOf('Reclassificar movimentação'));
-    assert.ok(menu.indexOf('Reclassificar movimentação') < menu.indexOf('Registrar evento'));
+    const menu = MAIN.slice(MAIN.indexOf('function onOpen'), MAIN.indexOf('/** Preparar planilha'));
+    // Fora do fluxo mensal: é correção posterior, não etapa do ciclo.
+    assert.ok(menu.indexOf('Fechar mês') < menu.indexOf('Reclassificar movimentação'));
+    assert.ok(menu.indexOf('Reclassificar movimentação') < menu.indexOf('Abrir entrada'));
   });
 
   it('existe como função global no arquivo empacotado', { scenario: 'C46' }, () => {

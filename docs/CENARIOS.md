@@ -57,6 +57,7 @@ HTML do painel; `npm run qa:visual` complementa medindo em Chromium headless.
 | C49 | Publicação manual da taxa da competência | 3 (operação) |
 | C50 | Evento manual inválido é recusado, nunca ignorado | 3 (operação) |
 | C51 | Parâmetro depreciado sai da configuração sem perder histórico | 3 (operação) |
+| C52 | Superfície de quatro abas e fila totalmente abstraída | 3 (operação) |
 
 Para ver a matriz com o resultado atual de cada cenário:
 

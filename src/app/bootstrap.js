@@ -83,14 +83,34 @@
     }
   ];
 
-  /** Abas internas ficam ocultas por padrão: são motor, não interface. */
+  /**
+   * TODA aba interna fica oculta: são motor, não interface.
+   *
+   * A superfície permanente é só HOME, MOVIMENTAÇÕES, PLANEJAMENTO e
+   * PATRIMÔNIO. Ocultar não tira acesso — o Apps Script lê e escreve aba
+   * oculta normalmente, e o menu reexibe sob demanda as três de entrada.
+   */
   var ABAS_INTERNAS_OCULTAS = [
-    A.IMPORT_EXTRATO, A.REGRAS, A.LEDGER, A.PROVISOES, A.OBJETIVOS,
+    A.CONFIG, A.IMPORT_EXTRATO, A.EVENTOS_MANUAIS, A.SALDOS_TRADING,
+    A.REGRAS, A.FILA_REVISAO, A.LEDGER, A.PROVISOES, A.OBJETIVOS,
     A.POSICOES, A.FECHAMENTOS, A.RESTATEMENTS, A.LOG
   ];
 
-  /** Abas internas que o usuário usa no dia a dia continuam visíveis. */
-  var ABAS_INTERNAS_OPERACIONAIS = [A.CONFIG, A.EVENTOS_MANUAIS, A.SALDOS_TRADING, A.FILA_REVISAO];
+  /**
+   * As três abas que o menu sabe reexibir e ativar ("Abrir entrada").
+   *
+   * 11 e 12 são as duas únicas abas do workbook que o sistema nunca escreve:
+   * entrada humana pura, em lote, e por isso continuam sendo tabela e não
+   * formulário. 00 é setup raro (cadastro de conta).
+   *
+   * 21_FILA_REVISAO NÃO entra aqui de propósito: a fila é abstraída por
+   * "Revisar pendências" e o usuário não deve precisar operá-la direto.
+   */
+  var ABAS_DE_ENTRADA = {
+    EVENTOS: A.EVENTOS_MANUAIS,
+    SALDOS: A.SALDOS_TRADING,
+    CONFIGURACAO: A.CONFIG
+  };
 
   /**
    * Listas fechadas nas abas internas de digitação.
@@ -174,19 +194,47 @@
   }
 
   /**
-   * Organiza o workbook: superfícies primeiro, abas operacionais depois,
-   * motor oculto. Ocultar não impede manutenção — o dono reexibe a aba
-   * pelo menu do Sheets a qualquer momento.
+   * Restaura a superfície canônica: as quatro visíveis, todo o resto oculto.
+   *
+   * Idempotente e barata (só visibilidade, sem reordenar). É o que "Atualizar
+   * abas" chama para devolver a planilha ao estado limpo depois de o usuário
+   * ter aberto uma aba de entrada.
+   */
+  function restaurarSuperficie(planilha) {
+    if (!planilha.ocultarAba) return [];
+    ABAS_VISIVEIS.forEach(function (aba) { planilha.ocultarAba(aba.nome, false); });
+    ABAS_INTERNAS_OCULTAS.forEach(function (nome) { planilha.ocultarAba(nome, true); });
+    return ABAS_INTERNAS_OCULTAS.slice();
+  }
+
+  /**
+   * Organiza o workbook: superfícies primeiro, motor depois e oculto.
+   * Ocultar não impede manutenção — o dono reexibe a aba pelo menu do Sheets,
+   * e as três de entrada têm comando próprio no menu Finance OS.
    */
   function organizarAbas(planilha) {
     if (!planilha.ocultarAba) return [];
     var ordem = ABAS_VISIVEIS.map(function (a) { return a.nome; })
-      .concat(ABAS_INTERNAS_OPERACIONAIS)
       .concat(ABAS_INTERNAS_OCULTAS);
     if (planilha.ordenarAbas) planilha.ordenarAbas(ordem);
-    ABAS_INTERNAS_OCULTAS.forEach(function (nome) { planilha.ocultarAba(nome, true); });
-    ABAS_INTERNAS_OPERACIONAIS.forEach(function (nome) { planilha.ocultarAba(nome, false); });
+    restaurarSuperficie(planilha);
     return ordem;
+  }
+
+  /**
+   * Reexibe e ativa uma das abas de entrada. Navegação, nunca escrita.
+   * Recusa qualquer aba fora da lista: a fila de revisão e o motor não são
+   * pontos de entrada.
+   */
+  function abrirEntrada(planilha, nome) {
+    var permitidas = Object.keys(ABAS_DE_ENTRADA).map(function (k) { return ABAS_DE_ENTRADA[k]; });
+    if (permitidas.indexOf(nome) === -1) {
+      FOS.Core.fail('ABA_NAO_E_ENTRADA',
+        'Esta aba não é um ponto de entrada: ' + nome,
+        { permitidas: permitidas });
+    }
+    if (!planilha.ativarAba) FOS.Core.fail('NAVEGACAO_INDISPONIVEL', 'A planilha não sabe ativar abas');
+    return planilha.ativarAba(nome);
   }
 
   /** Semeia 00 e 20 apenas se estiverem vazias (nunca sobrescreve). */
@@ -239,13 +287,15 @@
   FOS.App.Bootstrap = {
     ABAS_VISIVEIS: ABAS_VISIVEIS,
     ABAS_INTERNAS_OCULTAS: ABAS_INTERNAS_OCULTAS,
-    ABAS_INTERNAS_OPERACIONAIS: ABAS_INTERNAS_OPERACIONAIS,
+    ABAS_DE_ENTRADA: ABAS_DE_ENTRADA,
     VALIDACOES_OPERACIONAIS: VALIDACOES_OPERACIONAIS,
     criarEstrutura: criarEstrutura,
     formatarSuperficies: formatarSuperficies,
     validarAbasOperacionais: validarAbasOperacionais,
     depreciarParametros: depreciarParametros,
     organizarAbas: organizarAbas,
+    restaurarSuperficie: restaurarSuperficie,
+    abrirEntrada: abrirEntrada,
     semear: semear,
     inicializar: inicializar
   };

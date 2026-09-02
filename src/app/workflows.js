@@ -1529,6 +1529,12 @@
       if (opts.formatar !== false && repo.planilha.formatarAba) {
         FOS.App.Bootstrap.formatarSuperficies(repo.planilha);
       }
+      // Devolve a planilha à superfície canônica: as quatro abas visíveis e o
+      // resto oculto. O usuário pode ter aberto uma aba de entrada pelo menu;
+      // atualizar as abas é o momento natural de voltar ao estado limpo.
+      var ocultadas = opts.restaurar === false
+        ? []
+        : FOS.App.Bootstrap.restaurarSuperficie(repo.planilha);
 
       auditoria.registrar({
         acao: 'ATUALIZAR_SUPERFICIES',
@@ -1540,13 +1546,14 @@
           movimentacoes: linhas.MOVIMENTACOES.length,
           planejamento: linhas.PLANEJAMENTO.length,
           patrimonio: linhas.PATRIMONIO.length,
-          status: dadosPainel.atual.status
+          status: dadosPainel.atual.status,
+          abas_ocultadas: ocultadas.length
         },
         resultado: 'OK',
         detalhe: { competencia: competencia || 'ULTIMO_FECHAMENTO' }
       });
       auditoria.persistir();
-      return { painel: dadosPainel, linhas: linhas };
+      return { painel: dadosPainel, linhas: linhas, ocultadas: ocultadas };
     }
 
     return {
