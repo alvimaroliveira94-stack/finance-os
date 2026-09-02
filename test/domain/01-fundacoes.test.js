@@ -115,10 +115,10 @@ describe('Configuração (aba 00)', () => {
   });
 
   it('devolve null com reason para parâmetro bloqueado', () => {
-    const p = config.param('CUSTO_VIDA_ALVO_MENSAL_BRL');
+    const p = config.param('URL_PROVEDOR_TAXA_CAMBIO');
     assert.isNull(p.value);
     assert.equal(p.status, 'BLOQUEADO');
-    assert.equal(p.reason, 'AGUARDANDO_DEFINICAO_DO_USUARIO');
+    assert.equal(p.reason, 'POLITICA_MANUAL_NO_V1');
   });
 
   it('não inventa valor para parâmetro inexistente', () => {
@@ -128,7 +128,11 @@ describe('Configuração (aba 00)', () => {
   });
 
   it('lança ao exigir parâmetro numérico bloqueado', () => {
-    assert.throws(() => config.requireNumber('PATRIMONIO_ALVO_BRL'), 'PARAMETRO_INDISPONIVEL');
+    const bloqueado = FOS.Config.build(FOS.App.Seed.configRows().concat([{
+      secao: 'PARAMETRO', chave: 'PARAMETRO_NUMERICO_PENDENTE', valor: '', tipo: 'NUMERO',
+      status: 'BLOQUEADO', reason: 'AGUARDANDO_DEFINICAO_DO_USUARIO'
+    }]));
+    assert.throws(() => bloqueado.requireNumber('PARAMETRO_NUMERICO_PENDENTE'), 'PARAMETRO_INDISPONIVEL');
   });
 
   it('carrega o catálogo de contas com universo e modo de ingestão', () => {

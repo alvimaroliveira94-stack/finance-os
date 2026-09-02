@@ -137,6 +137,32 @@
   }
 
   /**
+   * Marca na planilha os parâmetros que deixaram de ser canônicos.
+   *
+   * A linha NÃO é apagada: o histórico de que aquele parâmetro existiu fica
+   * preservado, e o valor que o usuário porventura tenha digitado continua
+   * na célula. Só os metadados mudam (`status`, `reason`, `descricao`), para
+   * que quem lê a aba 00 veja o mesmo que o sistema entende — a fonte de
+   * verdade é Config.PARAMETROS_DEPRECIADOS, não a célula.
+   *
+   * Idempotente: rodar de novo não reescreve nada já sincronizado.
+   */
+  function depreciarParametros(planilha) {
+    if (!planilha.atualizarCampos) return [];
+    var depreciados = FOS.Config.PARAMETROS_DEPRECIADOS;
+    return Object.keys(depreciados).filter(function (chave) {
+      return planilha.atualizarCampos(A.CONFIG, function (linha) {
+        return String(linha.secao || '').toUpperCase() === 'PARAMETRO'
+          && String(linha.chave || '') === chave;
+      }, {
+        status: C.STATUS_PARAMETRO.DEPRECIADO,
+        reason: depreciados[chave],
+        descricao: 'Parâmetro descontinuado. O Finance OS não lê mais este valor.'
+      }) > 0;
+    });
+  }
+
+  /**
    * Aplica as listas fechadas nas abas internas de digitação.
    * Idempotente: reaplicar a mesma regra não duplica nada.
    */
@@ -182,6 +208,7 @@
     var semeadas = semear(repositorio);
     var formatadas = formatarSuperficies(planilha);
     var validadas = validarAbasOperacionais(planilha);
+    var depreciadas = depreciarParametros(planilha);
     var ordem = deps.organizar === false ? [] : organizarAbas(planilha);
 
     if (deps.auditoria) {
@@ -195,7 +222,8 @@
           config_semeada: semeadas.config,
           regras_semeadas: semeadas.regras,
           superficies_formatadas: formatadas.length,
-          colunas_validadas: validadas.length
+          colunas_validadas: validadas.length,
+          parametros_depreciados: depreciadas
         },
         resultado: 'OK',
         detalhe: 'Estrutura criada/verificada.'
@@ -204,7 +232,7 @@
     }
     return {
       abas: criadas, semeadas: semeadas, formatadas: formatadas,
-      validadas: validadas, ordem: ordem
+      validadas: validadas, depreciadas: depreciadas, ordem: ordem
     };
   }
 
@@ -216,6 +244,7 @@
     criarEstrutura: criarEstrutura,
     formatarSuperficies: formatarSuperficies,
     validarAbasOperacionais: validarAbasOperacionais,
+    depreciarParametros: depreciarParametros,
     organizarAbas: organizarAbas,
     semear: semear,
     inicializar: inicializar

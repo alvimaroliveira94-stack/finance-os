@@ -1041,14 +1041,20 @@
         }
       });
 
+      // Parâmetro DEPRECIADO não entra aqui: a decisão sobre ele já foi
+      // tomada, e cobrá-lo de novo seria pedir algo que o sistema não usa.
       Object.keys(config.parametros).forEach(function (chave) {
         var p = config.parametros[chave];
-        if (p.status === 'BLOQUEADO' && !parametrosCriticos.some(function (c) { return c.chave === chave; })) {
+        if (p.status === C.STATUS_PARAMETRO.BLOQUEADO
+          && !parametrosCriticos.some(function (c) { return c.chave === chave; })) {
           avisos.push({
             codigo: 'PARAMETRO_BLOQUEADO',
             chave: chave,
             reason: p.reason,
-            impacto: 'Não impede o fechamento; os cálculos que dependem dele ficam null com motivo.'
+            // Sem afirmar que existem cálculos dependentes: se e quando algum
+            // passar a usá-lo, o resultado é null com motivo, nunca um zero.
+            impacto: 'Não impede o fechamento. Enquanto estiver bloqueado, '
+              + 'qualquer cálculo que venha a usá-lo devolve null com motivo.'
           });
         }
       });

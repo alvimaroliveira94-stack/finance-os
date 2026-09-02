@@ -56,6 +56,7 @@ HTML do painel; `npm run qa:visual` complementa medindo em Chromium headless.
 | C48 | Painel restrito e sem endpoint mutável | 2 (experiência) |
 | C49 | Publicação manual da taxa da competência | 3 (operação) |
 | C50 | Evento manual inválido é recusado, nunca ignorado | 3 (operação) |
+| C51 | Parâmetro depreciado sai da configuração sem perder histórico | 3 (operação) |
 
 Para ver a matriz com o resultado atual de cada cenário:
 

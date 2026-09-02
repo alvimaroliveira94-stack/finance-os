@@ -81,6 +81,26 @@ function planilhaFake(opcoes) {
     abaEstaOculta(nome) { return !!ocultas[nome]; },
     chamadasDe(metodo) { return chamadas.filter((c) => c.metodo === metodo); },
 
+    /** Espelha o adaptador real: escreve só as células que mudam. */
+    atualizarCampos(nome, casa, campos) {
+      chamadas.push({ metodo: 'atualizarCampos', nome, campos });
+      if (!abas[nome]) throw FOS.Core.DomainError('ABA_INEXISTENTE', 'Aba não encontrada: ' + nome);
+      const headers = abas[nome].headers;
+      let alteradas = 0;
+      this.lerTabela(nome).forEach((linha, i) => {
+        if (!casa(linha)) return;
+        let mudou = false;
+        Object.keys(campos || {}).forEach((coluna) => {
+          const idx = headers.indexOf(coluna);
+          if (idx === -1 || linha[coluna] === campos[coluna]) return;
+          abas[nome].linhas[i][idx] = campos[coluna];
+          mudou = true;
+        });
+        if (mudou) alteradas++;
+      });
+      return alteradas;
+    },
+
     substituirTabela(nome, objetos) {
       abas[nome].linhas = [];
       return this.anexarLinhas(nome, objetos);

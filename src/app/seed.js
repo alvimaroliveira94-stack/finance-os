@@ -85,13 +85,11 @@
     parametro('URL_PROVEDOR_TAXA_CAMBIO', '', 'TEXTO', '',
       'URL https do provedor de taxa, com {data} e {moeda}.', C.STATUS_PARAMETRO.BLOQUEADO,
       'POLITICA_MANUAL_NO_V1'),
-    parametro('TIMEOUT_PROVEDOR_TAXA_MS', 15000, 'NUMERO', 'ms', 'Acima disso a consulta é tratada como indisponível.'),
-    parametro('CUSTO_VIDA_ALVO_MENSAL_BRL', '', 'NUMERO', 'BRL',
-      'Alvo canônico de custo de vida.', C.STATUS_PARAMETRO.BLOQUEADO,
-      'AGUARDANDO_DEFINICAO_DO_USUARIO'),
-    parametro('PATRIMONIO_ALVO_BRL', '', 'NUMERO', 'BRL',
-      'Alvo de patrimônio.', C.STATUS_PARAMETRO.BLOQUEADO,
-      'AGUARDANDO_DEFINICAO_DO_USUARIO')
+    parametro('TIMEOUT_PROVEDOR_TAXA_MS', 15000, 'NUMERO', 'ms', 'Acima disso a consulta é tratada como indisponível.')
+    // CUSTO_VIDA_ALVO_MENSAL_BRL e PATRIMONIO_ALVO_BRL saíram da semente:
+    // nenhum consumidor no domínio, nenhum efeito em fechamento ou painel.
+    // Meta de patrimônio é objetivo versionado (aba 31); custo de vida
+    // operacional vem do ledger observado. Ver Config.PARAMETROS_DEPRECIADOS.
   ];
 
   /** Catálogo de contas sintético, conforme o desenho de universos aprovado. */

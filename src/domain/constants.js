@@ -142,7 +142,11 @@
   /** Status de um parâmetro em 00_CONFIG_PARAMETROS. */
   var STATUS_PARAMETRO = {
     ATIVO: 'ATIVO',
-    BLOQUEADO: 'BLOQUEADO'
+    BLOQUEADO: 'BLOQUEADO',
+    // Parâmetro que já existiu e deixou de ser canônico. Diferente de
+    // BLOQUEADO: BLOQUEADO é uma decisão pendente, DEPRECIADO é uma decisão
+    // tomada — o sistema não o consome e não volta a cobrá-lo.
+    DEPRECIADO: 'DEPRECIADO'
   };
 
   /** Status de valor exposto ao dashboard (leitura). */

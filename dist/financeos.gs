@@ -500,7 +500,11 @@
   /** Status de um parâmetro em 00_CONFIG_PARAMETROS. */
   var STATUS_PARAMETRO = {
     ATIVO: 'ATIVO',
-    BLOQUEADO: 'BLOQUEADO'
+    BLOQUEADO: 'BLOQUEADO',
+    // Parâmetro que já existiu e deixou de ser canônico. Diferente de
+    // BLOQUEADO: BLOQUEADO é uma decisão pendente, DEPRECIADO é uma decisão
+    // tomada — o sistema não o consome e não volta a cobrá-lo.
+    DEPRECIADO: 'DEPRECIADO'
   };
 
   /** Status de valor exposto ao dashboard (leitura). */
@@ -878,6 +882,33 @@
   }
 
   /**
+   * Parâmetros que já foram canônicos e deixaram de ser.
+   *
+   * Esta lista é a fonte de verdade da depreciação, não a célula `status` da
+   * planilha: um parâmetro descontinuado não pode voltar a existir porque
+   * alguém editou a aba 00. A linha continua na planilha (histórico
+   * preservado, nada é apagado) e "Preparar planilha" apenas sincroniza o
+   * texto dela com esta lista.
+   *
+   * Ambos foram removidos por auditoria: declarados na semente, sem nenhum
+   * consumidor no domínio, sem efeito em fechamento, snapshot, estado do
+   * ciclo, planejamento ou dashboard — cobravam uma definição que o sistema
+   * não usava para nada.
+   */
+  var PARAMETROS_DEPRECIADOS = {
+    PATRIMONIO_ALVO_BRL:
+      'SUBSTITUIDO_POR_OBJETIVOS: meta de patrimônio é objetivo versionado na aba 31, '
+      + 'declarado pelo evento NOVO_OBJETIVO.',
+    CUSTO_VIDA_ALVO_MENSAL_BRL:
+      'SEM_CONSUMIDOR: o custo de vida operacional é derivado do ledger observado '
+      + 'e da média de MESES_MEDIA_CUSTO_VIDA.'
+  };
+
+  function ehDepreciado(chave) {
+    return Object.prototype.hasOwnProperty.call(PARAMETROS_DEPRECIADOS, chave);
+  }
+
+  /**
    * Constrói o objeto de configuração a partir das linhas da aba 00.
    * @param {Array<Object>} rows linhas já convertidas em objeto por cabeçalho
    */
@@ -892,6 +923,18 @@
       if (!secao || !chave) return;
 
       if (secao === 'PARAMETRO') {
+        if (ehDepreciado(chave)) {
+          parametros[chave] = {
+            chave: chave,
+            value: null,
+            status: C.STATUS_PARAMETRO.DEPRECIADO,
+            reason: PARAMETROS_DEPRECIADOS[chave],
+            tipo: String(r.tipo || 'TEXTO').trim().toUpperCase(),
+            unidade: r.unidade || null,
+            versao: parseNumber(r.versao) || 1
+          };
+          return;
+        }
         var bloqueado = String(r.status || '').trim().toUpperCase() === C.STATUS_PARAMETRO.BLOQUEADO;
         var tipo = String(r.tipo || 'TEXTO').trim().toUpperCase();
         var parsed = null;
@@ -964,7 +1007,13 @@
     };
   }
 
-  FOS.Config = { build: build, parseBool: parseBool, parseNumber: parseNumber };
+  FOS.Config = {
+    build: build,
+    parseBool: parseBool,
+    parseNumber: parseNumber,
+    PARAMETROS_DEPRECIADOS: PARAMETROS_DEPRECIADOS,
+    ehDepreciado: ehDepreciado
+  };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 /* ===== src/domain/accounts.js ===== */
@@ -5064,6 +5113,38 @@
       },
 
       /**
+       * Atualiza colunas específicas das linhas que casam com um filtro.
+       *
+       * Existe para migração pontual de metadados: escreve célula a célula,
+       * nunca reescreve a aba inteira. Numa aba que também guarda taxas
+       * publicadas, um `substituirTabela` para mexer em duas células seria
+       * desproporcional ao risco.
+       *
+       * @param {string} nome aba
+       * @param {function(Object):boolean} casa predicado sobre a linha lida
+       * @param {Object} campos coluna -> novo valor
+       * @returns {number} linhas alteradas
+       */
+      atualizarCampos: function (nome, casa, campos) {
+        var sheet = aba(nome);
+        var headers = this.cabecalhos(nome);
+        var linhas = this.lerTabela(nome);
+        var alteradas = 0;
+        linhas.forEach(function (linha, i) {
+          if (!casa(linha)) return;
+          var mudou = false;
+          Object.keys(campos || {}).forEach(function (coluna) {
+            var idx = headers.indexOf(coluna);
+            if (idx === -1 || linha[coluna] === campos[coluna]) return;
+            sheet.getRange(i + 2, idx + 1).setValue(campos[coluna]);
+            mudou = true;
+          });
+          if (mudou) alteradas++;
+        });
+        return alteradas;
+      },
+
+      /**
        * Reescreve a área de dados de uma aba de projeção.
        * Escreve a partir da linha 2 explicitamente, sem depender de
        * getLastRow() logo após o clearContent() — esse valor pode não ter
@@ -5569,13 +5650,11 @@
     parametro('URL_PROVEDOR_TAXA_CAMBIO', '', 'TEXTO', '',
       'URL https do provedor de taxa, com {data} e {moeda}.', C.STATUS_PARAMETRO.BLOQUEADO,
       'POLITICA_MANUAL_NO_V1'),
-    parametro('TIMEOUT_PROVEDOR_TAXA_MS', 15000, 'NUMERO', 'ms', 'Acima disso a consulta é tratada como indisponível.'),
-    parametro('CUSTO_VIDA_ALVO_MENSAL_BRL', '', 'NUMERO', 'BRL',
-      'Alvo canônico de custo de vida.', C.STATUS_PARAMETRO.BLOQUEADO,
-      'AGUARDANDO_DEFINICAO_DO_USUARIO'),
-    parametro('PATRIMONIO_ALVO_BRL', '', 'NUMERO', 'BRL',
-      'Alvo de patrimônio.', C.STATUS_PARAMETRO.BLOQUEADO,
-      'AGUARDANDO_DEFINICAO_DO_USUARIO')
+    parametro('TIMEOUT_PROVEDOR_TAXA_MS', 15000, 'NUMERO', 'ms', 'Acima disso a consulta é tratada como indisponível.')
+    // CUSTO_VIDA_ALVO_MENSAL_BRL e PATRIMONIO_ALVO_BRL saíram da semente:
+    // nenhum consumidor no domínio, nenhum efeito em fechamento ou painel.
+    // Meta de patrimônio é objetivo versionado (aba 31); custo de vida
+    // operacional vem do ledger observado. Ver Config.PARAMETROS_DEPRECIADOS.
   ];
 
   /** Catálogo de contas sintético, conforme o desenho de universos aprovado. */
@@ -5794,6 +5873,32 @@
   }
 
   /**
+   * Marca na planilha os parâmetros que deixaram de ser canônicos.
+   *
+   * A linha NÃO é apagada: o histórico de que aquele parâmetro existiu fica
+   * preservado, e o valor que o usuário porventura tenha digitado continua
+   * na célula. Só os metadados mudam (`status`, `reason`, `descricao`), para
+   * que quem lê a aba 00 veja o mesmo que o sistema entende — a fonte de
+   * verdade é Config.PARAMETROS_DEPRECIADOS, não a célula.
+   *
+   * Idempotente: rodar de novo não reescreve nada já sincronizado.
+   */
+  function depreciarParametros(planilha) {
+    if (!planilha.atualizarCampos) return [];
+    var depreciados = FOS.Config.PARAMETROS_DEPRECIADOS;
+    return Object.keys(depreciados).filter(function (chave) {
+      return planilha.atualizarCampos(A.CONFIG, function (linha) {
+        return String(linha.secao || '').toUpperCase() === 'PARAMETRO'
+          && String(linha.chave || '') === chave;
+      }, {
+        status: C.STATUS_PARAMETRO.DEPRECIADO,
+        reason: depreciados[chave],
+        descricao: 'Parâmetro descontinuado. O Finance OS não lê mais este valor.'
+      }) > 0;
+    });
+  }
+
+  /**
    * Aplica as listas fechadas nas abas internas de digitação.
    * Idempotente: reaplicar a mesma regra não duplica nada.
    */
@@ -5839,6 +5944,7 @@
     var semeadas = semear(repositorio);
     var formatadas = formatarSuperficies(planilha);
     var validadas = validarAbasOperacionais(planilha);
+    var depreciadas = depreciarParametros(planilha);
     var ordem = deps.organizar === false ? [] : organizarAbas(planilha);
 
     if (deps.auditoria) {
@@ -5852,7 +5958,8 @@
           config_semeada: semeadas.config,
           regras_semeadas: semeadas.regras,
           superficies_formatadas: formatadas.length,
-          colunas_validadas: validadas.length
+          colunas_validadas: validadas.length,
+          parametros_depreciados: depreciadas
         },
         resultado: 'OK',
         detalhe: 'Estrutura criada/verificada.'
@@ -5861,7 +5968,7 @@
     }
     return {
       abas: criadas, semeadas: semeadas, formatadas: formatadas,
-      validadas: validadas, ordem: ordem
+      validadas: validadas, depreciadas: depreciadas, ordem: ordem
     };
   }
 
@@ -5873,6 +5980,7 @@
     criarEstrutura: criarEstrutura,
     formatarSuperficies: formatarSuperficies,
     validarAbasOperacionais: validarAbasOperacionais,
+    depreciarParametros: depreciarParametros,
     organizarAbas: organizarAbas,
     semear: semear,
     inicializar: inicializar
@@ -6923,14 +7031,20 @@
         }
       });
 
+      // Parâmetro DEPRECIADO não entra aqui: a decisão sobre ele já foi
+      // tomada, e cobrá-lo de novo seria pedir algo que o sistema não usa.
       Object.keys(config.parametros).forEach(function (chave) {
         var p = config.parametros[chave];
-        if (p.status === 'BLOQUEADO' && !parametrosCriticos.some(function (c) { return c.chave === chave; })) {
+        if (p.status === C.STATUS_PARAMETRO.BLOQUEADO
+          && !parametrosCriticos.some(function (c) { return c.chave === chave; })) {
           avisos.push({
             codigo: 'PARAMETRO_BLOQUEADO',
             chave: chave,
             reason: p.reason,
-            impacto: 'Não impede o fechamento; os cálculos que dependem dele ficam null com motivo.'
+            // Sem afirmar que existem cálculos dependentes: se e quando algum
+            // passar a usá-lo, o resultado é null com motivo, nunca um zero.
+            impacto: 'Não impede o fechamento. Enquanto estiver bloqueado, '
+              + 'qualquer cálculo que venha a usá-lo devolve null com motivo.'
           });
         }
       });

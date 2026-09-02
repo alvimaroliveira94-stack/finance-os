@@ -218,6 +218,9 @@ O projeto do Apps Script precisa de **três coisas**, nada mais:
 6. Ajuste `00_CONFIG_PARAMETROS`: contas reais, saldo inicial do caixa de vida e parâmetros.
    Parâmetros que você ainda não decidiu devem ficar com `status = BLOQUEADO` e um `reason` —
    o sistema respeita isso e devolve `null` em vez de inventar número.
+   Linhas com `status = DEPRECIADO` são parâmetros que deixaram de ser canônicos: o sistema
+   não os lê mais e não os cobra. Ficam na aba como histórico; a lista está em
+   `FOS.Config.PARAMETROS_DEPRECIADOS`, e é ela que manda, não a célula.
 7. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
 8. Use **Revisar pendências** e **Registrar evento**; publique a cotação do mês em
    **Publicar taxa do mês**; então **Fechar mês** e **Abrir painel**.
@@ -254,6 +257,12 @@ recusada: a taxa da época fica preservada, e a correção só passa a valer por
 
 O fechamento é **offline por decisão**: ele lê a taxa materializada e nunca busca cotação
 sozinho. Sem taxa para a data de referência, o mês não fecha e o motivo aparece no diagnóstico.
+
+**Metas não são parâmetros.** Meta de patrimônio é um objetivo versionado na aba `31`,
+declarado pelo evento `NOVO_OBJETIVO` — com prazo, prioridade, histórico e acompanhamento de
+ritmo. O custo de vida operacional é derivado do ledger observado (`MESES_MEDIA_CUSTO_VIDA`),
+não de um alvo digitado. Os antigos `PATRIMONIO_ALVO_BRL` e `CUSTO_VIDA_ALVO_MENSAL_BRL` foram
+descontinuados por auditoria: nenhum cálculo os consumia.
 
 Os meses fecham **em ordem cronológica**: o sistema recusa fechar um mês deixando
 um mês anterior com movimento ainda em aberto, porque o estado do ciclo depende de

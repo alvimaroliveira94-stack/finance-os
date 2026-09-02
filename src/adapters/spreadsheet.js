@@ -223,6 +223,38 @@
       },
 
       /**
+       * Atualiza colunas específicas das linhas que casam com um filtro.
+       *
+       * Existe para migração pontual de metadados: escreve célula a célula,
+       * nunca reescreve a aba inteira. Numa aba que também guarda taxas
+       * publicadas, um `substituirTabela` para mexer em duas células seria
+       * desproporcional ao risco.
+       *
+       * @param {string} nome aba
+       * @param {function(Object):boolean} casa predicado sobre a linha lida
+       * @param {Object} campos coluna -> novo valor
+       * @returns {number} linhas alteradas
+       */
+      atualizarCampos: function (nome, casa, campos) {
+        var sheet = aba(nome);
+        var headers = this.cabecalhos(nome);
+        var linhas = this.lerTabela(nome);
+        var alteradas = 0;
+        linhas.forEach(function (linha, i) {
+          if (!casa(linha)) return;
+          var mudou = false;
+          Object.keys(campos || {}).forEach(function (coluna) {
+            var idx = headers.indexOf(coluna);
+            if (idx === -1 || linha[coluna] === campos[coluna]) return;
+            sheet.getRange(i + 2, idx + 1).setValue(campos[coluna]);
+            mudou = true;
+          });
+          if (mudou) alteradas++;
+        });
+        return alteradas;
+      },
+
+      /**
        * Reescreve a área de dados de uma aba de projeção.
        * Escreve a partir da linha 2 explicitamente, sem depender de
        * getLastRow() logo após o clearContent() — esse valor pode não ter

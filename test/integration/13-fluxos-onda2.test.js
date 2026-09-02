@@ -359,9 +359,13 @@ describe('Diagnóstico de setup', () => {
     const diag = ctx.workflows.diagnosticoSetup();
     assert.ok(diag.pronto, 'a semente sintética já nasce pronta: ' + JSON.stringify(diag.bloqueios));
     const avisos = diag.avisos.map((a) => a.chave);
-    assert.includes(avisos, 'CUSTO_VIDA_ALVO_MENSAL_BRL');
-    assert.includes(avisos, 'PATRIMONIO_ALVO_BRL');
+    assert.includes(avisos, 'URL_PROVEDOR_TAXA_CAMBIO');
     diag.avisos.forEach((a) => assert.includes(a.impacto, 'Não impede'));
+    // A mensagem não pode afirmar que existem cálculos dependentes: só um dos
+    // parâmetros bloqueados tem consumidor, e ele depende da política HTTP.
+    diag.avisos.forEach((a) => assert.equal(
+      a.impacto.indexOf('os cálculos que dependem dele'), -1,
+      'aviso não deve prometer dependentes que podem não existir'));
   });
 
   it('avalia também as invariantes da competência informada', { scenario: 'C44' }, () => {

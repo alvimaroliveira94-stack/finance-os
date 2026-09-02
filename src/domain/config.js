@@ -28,6 +28,33 @@
   }
 
   /**
+   * Parâmetros que já foram canônicos e deixaram de ser.
+   *
+   * Esta lista é a fonte de verdade da depreciação, não a célula `status` da
+   * planilha: um parâmetro descontinuado não pode voltar a existir porque
+   * alguém editou a aba 00. A linha continua na planilha (histórico
+   * preservado, nada é apagado) e "Preparar planilha" apenas sincroniza o
+   * texto dela com esta lista.
+   *
+   * Ambos foram removidos por auditoria: declarados na semente, sem nenhum
+   * consumidor no domínio, sem efeito em fechamento, snapshot, estado do
+   * ciclo, planejamento ou dashboard — cobravam uma definição que o sistema
+   * não usava para nada.
+   */
+  var PARAMETROS_DEPRECIADOS = {
+    PATRIMONIO_ALVO_BRL:
+      'SUBSTITUIDO_POR_OBJETIVOS: meta de patrimônio é objetivo versionado na aba 31, '
+      + 'declarado pelo evento NOVO_OBJETIVO.',
+    CUSTO_VIDA_ALVO_MENSAL_BRL:
+      'SEM_CONSUMIDOR: o custo de vida operacional é derivado do ledger observado '
+      + 'e da média de MESES_MEDIA_CUSTO_VIDA.'
+  };
+
+  function ehDepreciado(chave) {
+    return Object.prototype.hasOwnProperty.call(PARAMETROS_DEPRECIADOS, chave);
+  }
+
+  /**
    * Constrói o objeto de configuração a partir das linhas da aba 00.
    * @param {Array<Object>} rows linhas já convertidas em objeto por cabeçalho
    */
@@ -42,6 +69,18 @@
       if (!secao || !chave) return;
 
       if (secao === 'PARAMETRO') {
+        if (ehDepreciado(chave)) {
+          parametros[chave] = {
+            chave: chave,
+            value: null,
+            status: C.STATUS_PARAMETRO.DEPRECIADO,
+            reason: PARAMETROS_DEPRECIADOS[chave],
+            tipo: String(r.tipo || 'TEXTO').trim().toUpperCase(),
+            unidade: r.unidade || null,
+            versao: parseNumber(r.versao) || 1
+          };
+          return;
+        }
         var bloqueado = String(r.status || '').trim().toUpperCase() === C.STATUS_PARAMETRO.BLOQUEADO;
         var tipo = String(r.tipo || 'TEXTO').trim().toUpperCase();
         var parsed = null;
@@ -114,5 +153,11 @@
     };
   }
 
-  FOS.Config = { build: build, parseBool: parseBool, parseNumber: parseNumber };
+  FOS.Config = {
+    build: build,
+    parseBool: parseBool,
+    parseNumber: parseNumber,
+    PARAMETROS_DEPRECIADOS: PARAMETROS_DEPRECIADOS,
+    ehDepreciado: ehDepreciado
+  };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
