@@ -481,6 +481,7 @@
         && String(atual.subcategoria || '') === String(params.subcategoria || '')) {
         auditoria.registrar({
           acao: 'RECLASSIFICAR_LINHA',
+          ator: params.ator || ator,
           entidade: A.LEDGER,
           entidade_id: atual.linha_id,
           antes: { categoria: atual.categoria, subcategoria: atual.subcategoria },
@@ -504,6 +505,7 @@
       repo.anexar(A.LEDGER, [nova]);
       auditoria.registrar({
         acao: 'RECLASSIFICAR_LINHA',
+        ator: params.ator || ator,
         entidade: A.LEDGER,
         entidade_id: nova.linha_id,
         antes: {
@@ -613,6 +615,7 @@
 
       auditoria.registrar({
         acao: 'RESOLVER_ITEM_FILA',
+        ator: params.ator || 'USUARIO',
         entidade: A.FILA_REVISAO,
         entidade_id: itemId,
         antes: { status: item.status, motivo: item.motivo, referencia: item.referencia },
@@ -664,6 +667,7 @@
       repo.anexar(A.LEDGER, [nova]);
       auditoria.registrar({
         acao: 'CLASSIFICAR_PENDENTE',
+        ator: params.ator || 'USUARIO',
         entidade: A.LEDGER,
         entidade_id: nova.linha_id,
         antes: { categoria: null, origem: 'STAGING', fingerprint: staging.fingerprint },
@@ -712,6 +716,7 @@
       repo.anexar(A.LEDGER, [nova]);
       auditoria.registrar({
         acao: 'CONCILIAR_MANUALMENTE',
+        ator: params.ator || 'USUARIO',
         entidade: A.LEDGER,
         entidade_id: nova.linha_id,
         antes: { evento_conciliado_id: atual.evento_conciliado_id || '', categoria: atual.categoria },

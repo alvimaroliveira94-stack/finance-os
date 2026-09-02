@@ -6162,6 +6162,7 @@
         && String(atual.subcategoria || '') === String(params.subcategoria || '')) {
         auditoria.registrar({
           acao: 'RECLASSIFICAR_LINHA',
+          ator: params.ator || ator,
           entidade: A.LEDGER,
           entidade_id: atual.linha_id,
           antes: { categoria: atual.categoria, subcategoria: atual.subcategoria },
@@ -6185,6 +6186,7 @@
       repo.anexar(A.LEDGER, [nova]);
       auditoria.registrar({
         acao: 'RECLASSIFICAR_LINHA',
+        ator: params.ator || ator,
         entidade: A.LEDGER,
         entidade_id: nova.linha_id,
         antes: {
@@ -6294,6 +6296,7 @@
 
       auditoria.registrar({
         acao: 'RESOLVER_ITEM_FILA',
+        ator: params.ator || 'USUARIO',
         entidade: A.FILA_REVISAO,
         entidade_id: itemId,
         antes: { status: item.status, motivo: item.motivo, referencia: item.referencia },
@@ -6345,6 +6348,7 @@
       repo.anexar(A.LEDGER, [nova]);
       auditoria.registrar({
         acao: 'CLASSIFICAR_PENDENTE',
+        ator: params.ator || 'USUARIO',
         entidade: A.LEDGER,
         entidade_id: nova.linha_id,
         antes: { categoria: null, origem: 'STAGING', fingerprint: staging.fingerprint },
@@ -6393,6 +6397,7 @@
       repo.anexar(A.LEDGER, [nova]);
       auditoria.registrar({
         acao: 'CONCILIAR_MANUALMENTE',
+        ator: params.ator || 'USUARIO',
         entidade: A.LEDGER,
         entidade_id: nova.linha_id,
         antes: { evento_conciliado_id: atual.evento_conciliado_id || '', categoria: atual.categoria },
@@ -7026,6 +7031,7 @@ function onOpen() {
     .addItem('Preparar planilha', 'fosSetup')
     .addItem('Importar extrato', 'fosImportarExtrato')
     .addItem('Revisar pendências', 'fosRevisarPendencias')
+    .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
     .addItem('Registrar evento', 'fosRegistrarEvento')
     .addItem('Fechar mês', 'fosFecharMes')
     .addSeparator()
@@ -7118,6 +7124,99 @@ function fosRevisarPendencias() {
     ui.alert('Pendência resolvida', 'Restam ' + (abertos.length - 1) + ' item(ns).', ui.ButtonSet.OK);
   } catch (e) {
     ui.alert('Não foi possível resolver', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Reclassificar movimentação: muda a categoria gerencial de uma linha do
+ * ledger que já foi classificada.
+ *
+ * É o caminho para corrigir um entendimento posterior ("aquele crédito era
+ * resgate de poupança, não custo de vida") sem mexer na fila: o item já
+ * resolvido continua RESOLVIDO e nada é reaberto, editado ou apagado.
+ *
+ * A escrita é feita exclusivamente por workflows.reclassificarLinha, que
+ * acrescenta uma nova versão gerencial (append-only), preserva a origem
+ * imutável, registra antes/depois na aba 90 e recusa período fechado,
+ * referência inexistente ou ambígua e categoria fora do catálogo.
+ */
+function fosReclassificarMovimentacao() {
+  var ui = _fosUi();
+  var amb = _fosAmbiente();
+
+  var fechadas = amb.workflows.competenciasFechadas();
+  var abertas = FOS.Ledger.visaoCorrente(amb.repositorio.ledger()).filter(function (l) {
+    return fechadas.indexOf(FOS.Dates.competenciaOf(String(l.data_origem))) === -1;
+  });
+  if (!abertas.length) {
+    ui.alert('Reclassificar movimentação',
+      'Nenhuma movimentação em competência aberta.\n\n'
+      + 'Competências já fechadas só mudam por reapresentação (restatement).',
+      ui.ButtonSet.OK);
+    return;
+  }
+
+  var recentes = FOS.Core.sortBy(abertas, [function (l) { return String(l.data_origem); }])
+    .reverse()
+    .slice(0, 12);
+  var lista = recentes.map(function (l) {
+    return String(l.fingerprint).slice(0, 12)
+      + '  ' + l.data_origem
+      + '  ' + l.valor_origem
+      + '  ' + l.categoria
+      + '  ' + String(l.descricao_origem || '').slice(0, 28);
+  }).join('\n');
+
+  var referencia = ui.prompt(
+    'Reclassificar movimentação (1 de 3)',
+    'Movimentações em competência aberta'
+      + (abertas.length > recentes.length ? ' (as ' + recentes.length + ' mais recentes de ' + abertas.length + ')' : '')
+      + ':\n\n' + lista
+      + '\n\nCole a referência da linha (coluna "referencia" da aba MOVIMENTAÇÕES):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (referencia.getSelectedButton() !== ui.Button.OK) return;
+
+  var categoria = ui.prompt(
+    'Reclassificar movimentação (2 de 3)',
+    'Nova categoria:\n' + FOS.Constants.values(FOS.Constants.CATEGORIA).join('\n'),
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (categoria.getSelectedButton() !== ui.Button.OK) return;
+
+  var motivo = ui.prompt(
+    'Reclassificar movimentação (3 de 3)',
+    'Por que está mudando? O motivo fica gravado no log de auditoria.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (motivo.getSelectedButton() !== ui.Button.OK) return;
+  if (!motivo.getResponseText().trim()) {
+    ui.alert('Reclassificar movimentação',
+      'Nada foi alterado: a reclassificação exige um motivo explícito.', ui.ButtonSet.OK);
+    return;
+  }
+
+  try {
+    var r = amb.workflows.reclassificarLinha({
+      referencia: referencia.getResponseText().trim(),
+      categoria: categoria.getResponseText().trim().toUpperCase(),
+      motivo: motivo.getResponseText().trim(),
+      ator: 'USUARIO'
+    });
+    if (!r.alterado) {
+      ui.alert('Reclassificar movimentação',
+        'A linha já estava nessa categoria. Nada foi alterado.', ui.ButtonSet.OK);
+      return;
+    }
+    ui.alert('Movimentação reclassificada',
+      r.versao_anterior.data_origem + '  ' + r.versao_anterior.valor_origem
+      + '\n\nDe: ' + r.versao_anterior.categoria
+      + '\nPara: ' + r.linha.categoria
+      + '\n\nVersão ' + r.versao_anterior.versao_gerencial + ' preservada; '
+      + 'gravada a versão ' + r.linha.versao_gerencial + '.',
+      ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Não foi possível reclassificar', e.message, ui.ButtonSet.OK);
   }
 }
 
