@@ -13,16 +13,16 @@
 
   SCHEMA[A.CONFIG] = {
     nome: A.CONFIG,
-    descricao: 'Parâmetros, catálogo de contas e enums. Parâmetro bloqueado devolve null + reason.',
+    descricao: 'Parâmetros, catálogo de contas, enums e taxas materializadas. Parâmetro bloqueado devolve null + reason.',
     chave: ['secao', 'chave'],
     colunas: [
-      'secao',                  // PARAMETRO | CONTA | ENUM
+      'secao',                  // PARAMETRO | CONTA | ENUM | TAXA
       'chave',
       'valor',
       'tipo',                   // NUMERO | TEXTO | BOOLEANO | PERCENTUAL
       'unidade',
       'universo',               // usado por secao=CONTA
-      'modo_ingestao',          // usado por secao=CONTA
+      'modo_ingestao',          // usado por secao=CONTA e secao=TAXA (MANUAL | HTTP)
       'moeda',
       'ativa',                  // usado por secao=CONTA
       'elegivel_importacao',    // usado por secao=CONTA
@@ -30,7 +30,8 @@
       'reason',
       'versao',
       'atualizado_em',
-      'descricao'
+      'descricao',
+      'data_cotacao'            // usado por secao=TAXA: dia efetivo da cotação publicada
     ]
   };
 

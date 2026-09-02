@@ -570,16 +570,16 @@
 
   SCHEMA[A.CONFIG] = {
     nome: A.CONFIG,
-    descricao: 'Parâmetros, catálogo de contas e enums. Parâmetro bloqueado devolve null + reason.',
+    descricao: 'Parâmetros, catálogo de contas, enums e taxas materializadas. Parâmetro bloqueado devolve null + reason.',
     chave: ['secao', 'chave'],
     colunas: [
-      'secao',                  // PARAMETRO | CONTA | ENUM
+      'secao',                  // PARAMETRO | CONTA | ENUM | TAXA
       'chave',
       'valor',
       'tipo',                   // NUMERO | TEXTO | BOOLEANO | PERCENTUAL
       'unidade',
       'universo',               // usado por secao=CONTA
-      'modo_ingestao',          // usado por secao=CONTA
+      'modo_ingestao',          // usado por secao=CONTA e secao=TAXA (MANUAL | HTTP)
       'moeda',
       'ativa',                  // usado por secao=CONTA
       'elegivel_importacao',    // usado por secao=CONTA
@@ -587,7 +587,8 @@
       'reason',
       'versao',
       'atualizado_em',
-      'descricao'
+      'descricao',
+      'data_cotacao'            // usado por secao=TAXA: dia efetivo da cotação publicada
     ]
   };
 
@@ -2478,29 +2479,73 @@
   }
 
   /**
+   * Normaliza uma entrada da tabela de taxas.
+   *
+   * A tabela aceita duas formas: um número puro (provedor manual, provedor
+   * HTTP) ou um registro completo vindo do cache materializado, que carrega
+   * também o dia efetivo da cotação e a versão publicada. Isso permite que o
+   * fechamento registre "taxa de referência 2026-05-31, cotação PTAX de
+   * 2026-05-29" sem que o domínio precise conhecer calendário de feriados.
+   */
+  function entradaDeTaxa(bruto) {
+    if (bruto === null || bruto === undefined || bruto === '') return null;
+    var valor = typeof bruto === 'object' ? bruto.valor : bruto;
+    var numero = Number(valor);
+    if (valor === '' || valor === null || valor === undefined || !Number.isFinite(numero)) return null;
+    if (typeof bruto !== 'object') {
+      return { valor: numero, data_cotacao: null, versao: 1, provedor: null };
+    }
+    return {
+      valor: numero,
+      data_cotacao: bruto.data_cotacao || null,
+      versao: Number(bruto.versao) || 1,
+      provedor: bruto.provedor || null
+    };
+  }
+
+  /**
    * Resolve a taxa para uma data exata. Sem taxa exata, sem chute.
-   * @returns {{value:?number, status:string, reason:?string, provedor:?string, data:?string}}
+   *
+   * Não existe fallback para "o dia útil anterior" aqui de propósito: o
+   * domínio não conhece feriado nem calendário bancário, e adivinhar seria
+   * exatamente o chute silencioso que esta arquitetura proíbe. Quem publica a
+   * taxa informa qual cotação usou e sob qual data de referência ela vale.
+   *
+   * @returns {{value:?number, status:string, reason:?string, provedor:?string,
+   *            data:?string, data_cotacao:?string, versao:?number, par:string}}
    */
   function resolver(tabela, moedaEstrangeira, moedaGerencial, dataIso, provedor) {
-    if (String(moedaEstrangeira).toUpperCase() === String(moedaGerencial).toUpperCase()) {
-      return { value: 1, status: 'OK', reason: null, provedor: 'IDENTIDADE', data: dataIso };
-    }
     var chave = par(moedaEstrangeira, moedaGerencial);
+    if (String(moedaEstrangeira).toUpperCase() === String(moedaGerencial).toUpperCase()) {
+      return {
+        value: 1, status: 'OK', reason: null, provedor: 'IDENTIDADE',
+        data: dataIso, data_cotacao: dataIso, versao: null, par: chave
+      };
+    }
     var serie = (tabela || {})[chave];
     if (!serie) {
       return {
         value: null, status: 'NULL', provedor: provedor || null, data: null,
+        data_cotacao: null, versao: null, par: chave,
         reason: 'TAXA_INDISPONIVEL_PAR:' + chave
       };
     }
-    var taxa = serie[dataIso];
-    if (taxa === undefined || taxa === null || !Number.isFinite(Number(taxa))) {
+    var entrada = entradaDeTaxa(serie[dataIso]);
+    if (!entrada) {
       return {
         value: null, status: 'NULL', provedor: provedor || null, data: null,
+        data_cotacao: null, versao: null, par: chave,
         reason: 'TAXA_INDISPONIVEL_DATA:' + chave + '@' + dataIso
       };
     }
-    return { value: Number(taxa), status: 'OK', reason: null, provedor: provedor || 'PTAX', data: dataIso };
+    return {
+      value: entrada.valor, status: 'OK', reason: null,
+      provedor: entrada.provedor || provedor || 'PTAX',
+      data: dataIso,
+      data_cotacao: entrada.data_cotacao || dataIso,
+      versao: entrada.versao,
+      par: chave
+    };
   }
 
   /** Converte um valor para a moeda gerencial. Taxa ausente => null + reason. */
@@ -2552,9 +2597,25 @@
    * Linha de cache de taxa para a aba 00. Materializar na planilha é o que
    * permite reprocessar um fechamento antigo com a MESMA taxa usada na época,
    * sem depender do provedor estar no ar.
+   *
+   * `dataIso` é a data de REFERÊNCIA (o último dia da competência, que é a
+   * data à qual a taxa pertence). `opcoes.dataCotacao` é o dia efetivo da
+   * cotação publicada — pode ser anterior, quando não houve PTAX na data de
+   * referência. Guardar os dois separadamente é o que torna a política
+   * auditável: a planilha diz qual cotação foi usada e por quê.
+   *
+   * O nome do provedor fica em `modo_ingestao`, legível por máquina, para
+   * que o snapshot de fechamento possa registrar a fonte oficial da taxa.
+   *
+   * @param {{versao?:number, dataCotacao?:string}} [opcoes]
    */
-  function linhaDeCache(moedaEstrangeira, moedaGerencial, dataIso, taxa, provedor, agora, reason) {
-    var bloqueada = taxa === null || taxa === undefined || !Number.isFinite(Number(taxa));
+  function linhaDeCache(moedaEstrangeira, moedaGerencial, dataIso, taxa, provedor, agora, reason, opcoes) {
+    var o = opcoes || {};
+    var bloqueada = taxa === null || taxa === undefined || taxa === '' || !Number.isFinite(Number(taxa));
+    var cotacao = o.dataCotacao || (bloqueada ? '' : dataIso);
+    var nota = cotacao && cotacao !== dataIso
+      ? ' Cotação de ' + cotacao + ' aplicada à data de referência ' + dataIso + '.'
+      : '';
     return {
       secao: SECAO_TAXA,
       chave: chaveCache(par(moedaEstrangeira, moedaGerencial), dataIso),
@@ -2562,30 +2623,97 @@
       tipo: 'NUMERO',
       unidade: moedaGerencial + ' por ' + moedaEstrangeira,
       universo: '',
-      modo_ingestao: '',
+      modo_ingestao: provedor || '',
       moeda: moedaEstrangeira,
       ativa: '',
       elegivel_importacao: '',
       status: bloqueada ? 'BLOQUEADO' : 'ATIVO',
       reason: bloqueada ? (reason || 'TAXA_NAO_PUBLICADA') : '',
-      versao: 1,
+      versao: Number(o.versao) > 0 ? Number(o.versao) : 1,
       atualizado_em: agora || '',
-      descricao: 'Cache de taxa (' + (provedor || 'DESCONHECIDO') + '). Não editar à mão.'
+      descricao: 'Cache de taxa (' + (provedor || 'DESCONHECIDO') + ').' + nota
+        + ' Não editar à mão: use o menu Finance OS.',
+      data_cotacao: cotacao
     };
   }
 
-  /** Tabela de taxas a partir das linhas de cache da aba 00. */
-  function tabelaDeCache(configRows) {
-    var tabela = {};
+  /**
+   * Linhas de cache já interpretadas, em ordem de versão crescente.
+   *
+   * A aba 00 é append-only: corrigir uma taxa publicada significa acrescentar
+   * uma linha de versão maior, nunca editar a linha anterior. Esta função é a
+   * leitura crua — quem escolhe a versão vigente é tabelaDeCache.
+   *
+   * @param {Array<Object>} configRows linhas da aba 00
+   * @param {string} [chaveFiltro] restringe a uma chave 'BRL/GBP@2026-05-31'
+   */
+  function linhasDeCache(configRows, chaveFiltro) {
+    var lista = [];
     (configRows || []).forEach(function (r) {
       if (String(r.secao || '').toUpperCase() !== SECAO_TAXA) return;
-      if (String(r.status || '').toUpperCase() === 'BLOQUEADO') return;
-      var partes = String(r.chave || '').split('@');
-      if (partes.length !== 2) return;
-      var valor = Number(r.valor);
-      if (!Number.isFinite(valor)) return;
-      tabela[partes[0]] = tabela[partes[0]] || {};
-      tabela[partes[0]][partes[1]] = valor;
+      var chave = String(r.chave || '');
+      var partes = chave.split('@');
+      if (partes.length !== 2 || !partes[0] || !partes[1]) return;
+      if (chaveFiltro && chave !== chaveFiltro) return;
+      var bruto = r.valor;
+      var numero = Number(bruto);
+      var valor = (bruto === '' || bruto === null || bruto === undefined || !Number.isFinite(numero))
+        ? null : numero;
+      lista.push({
+        chave: chave,
+        par: partes[0],
+        data: partes[1],
+        valor: valor,
+        data_cotacao: String(r.data_cotacao || '') || null,
+        modo_ingestao: String(r.modo_ingestao || '') || null,
+        status: String(r.status || 'ATIVO').toUpperCase(),
+        reason: String(r.reason || '') || null,
+        versao: Number(r.versao) > 0 ? Number(r.versao) : 1,
+        atualizado_em: r.atualizado_em || null
+      });
+    });
+    return FOS.Core.sortBy(lista, [function (e) { return e.versao; }]);
+  }
+
+  /** Maior versão já publicada para uma chave (0 se a chave é inédita). */
+  function versaoDeCache(configRows, chave) {
+    return linhasDeCache(configRows, chave).reduce(function (maior, e) {
+      return e.versao > maior ? e.versao : maior;
+    }, 0);
+  }
+
+  /** Linha vigente de uma chave: a de maior versão, ou null. */
+  function vigenteDeCache(configRows, chave) {
+    var linhas = linhasDeCache(configRows, chave);
+    return linhas.length ? linhas[linhas.length - 1] : null;
+  }
+
+  /**
+   * Tabela de taxas a partir das linhas de cache da aba 00.
+   *
+   * A versão vigente de cada chave é a de MAIOR número de versão, nunca a
+   * última linha lida: a ordem física das linhas na planilha não pode alterar
+   * o resultado de um fechamento. Uma linha BLOQUEADA de versão maior
+   * despublica a taxa anterior — é assim que se retira uma taxa errada sem
+   * apagar histórico.
+   */
+  function tabelaDeCache(configRows) {
+    var vigentes = {};
+    linhasDeCache(configRows).forEach(function (e) {
+      var atual = vigentes[e.chave];
+      if (!atual || e.versao >= atual.versao) vigentes[e.chave] = e;
+    });
+    var tabela = {};
+    Object.keys(vigentes).forEach(function (chave) {
+      var e = vigentes[chave];
+      if (e.status === 'BLOQUEADO' || e.valor === null) return;
+      tabela[e.par] = tabela[e.par] || {};
+      tabela[e.par][e.data] = {
+        valor: e.valor,
+        data_cotacao: e.data_cotacao,
+        versao: e.versao,
+        provedor: e.modo_ingestao
+      };
     });
     return tabela;
   }
@@ -2595,7 +2723,11 @@
     par: par,
     chaveCache: chaveCache,
     linhaDeCache: linhaDeCache,
+    linhasDeCache: linhasDeCache,
+    versaoDeCache: versaoDeCache,
+    vigenteDeCache: vigenteDeCache,
     tabelaDeCache: tabelaDeCache,
+    entradaDeTaxa: entradaDeTaxa,
     resolver: resolver,
     converter: converter,
     efeitoCambial: efeitoCambial,
@@ -3767,7 +3899,13 @@
         par: ctx.taxa && ctx.taxa.par ? ctx.taxa.par : FOS.Fx.par(C.MOEDA.GBP, moedaGerencial),
         provedor: ctx.taxa ? ctx.taxa.provedor : null,
         taxa: ctx.taxa ? ctx.taxa.value : null,
+        // data_taxa é a data de REFERÊNCIA da competência; data_cotacao é o dia
+        // efetivo da cotação usada. Elas divergem quando não houve PTAX no
+        // último dia do mês — o snapshot guarda as duas para que a reapresentação
+        // reproduza a decisão original.
         data_taxa: ctx.taxa ? ctx.taxa.data : null,
+        data_cotacao: ctx.taxa ? (ctx.taxa.data_cotacao || null) : null,
+        versao_taxa: ctx.taxa ? (ctx.taxa.versao || null) : null,
         reason: ctx.taxa ? ctx.taxa.reason : 'TAXA_NAO_INFORMADA',
         efeito_cambial_brl: managed(efeito)
       },
@@ -5129,14 +5267,24 @@
     if (provedor && typeof provedor.tabela === 'function') {
       return FOS.Fx.resolver(provedor.tabela(), moedaEstrangeira, moedaGerencial, dataIso, provedor.nome);
     }
+    var chave = FOS.Fx.par(moedaEstrangeira, moedaGerencial);
     if (provedor && typeof provedor.obter === 'function') {
       var r = provedor.obter(moedaEstrangeira, moedaGerencial, dataIso);
       if (r.value === null) {
-        return { value: null, status: 'NULL', reason: r.reason || 'TAXA_INDISPONIVEL', provedor: provedor.nome, data: null };
+        return {
+          value: null, status: 'NULL', reason: r.reason || 'TAXA_INDISPONIVEL',
+          provedor: provedor.nome, data: null, data_cotacao: null, versao: null, par: chave
+        };
       }
-      return { value: r.value, status: 'OK', reason: null, provedor: provedor.nome, data: dataIso };
+      return {
+        value: r.value, status: 'OK', reason: null, provedor: provedor.nome,
+        data: dataIso, data_cotacao: dataIso, versao: null, par: chave
+      };
     }
-    return { value: null, status: 'NULL', reason: 'PROVEDOR_NAO_CONFIGURADO', provedor: null, data: null };
+    return {
+      value: null, status: 'NULL', reason: 'PROVEDOR_NAO_CONFIGURADO',
+      provedor: null, data: null, data_cotacao: null, versao: null, par: chave
+    };
   }
 
   FOS.Adapters.provedorManual = provedorManual;
@@ -5397,7 +5545,8 @@
     parametro('COMPETENCIA_INICIAL_CAIXA_VIDA', '2026-01', 'TEXTO', '', 'Competência a partir da qual o ledger conta para o caixa.'),
     parametro('MAX_IDADE_VIEWMODEL_DIAS', 45, 'NUMERO', 'dias', 'Acima disso o dashboard marca o dado como STALE.'),
     parametro('POLITICA_TAXA_CAMBIO', 'MANUAL', 'TEXTO', '',
-      'MANUAL usa apenas as taxas materializadas na planilha; HTTP consulta o provedor configurado.'),
+      'MANUAL usa apenas as taxas publicadas pelo menu Finance OS > Publicar taxa do mês; '
+      + 'HTTP consulta o provedor configurado.'),
     parametro('URL_PROVEDOR_TAXA_CAMBIO', '', 'TEXTO', '',
       'URL https do provedor de taxa, com {data} e {moeda}.', C.STATUS_PARAMETRO.BLOQUEADO,
       'POLITICA_MANUAL_NO_V1'),
@@ -6749,8 +6898,22 @@
       var validacao = null;
       if (competencia) {
         try {
+          var estadoTaxas = taxasPublicadas(competencia);
           validacao = FOS.Closing.validar(montarContexto(competencia));
           validacao.violacoes.forEach(function (v) {
+            // A falta de taxa é o bloqueio mais comum e o mais fácil de
+            // resolver: vale dizer o que fazer, não só qual invariante falhou.
+            if (v.codigo === 'TAXA_CAMBIAL_DISPONIVEL') {
+              bloqueios.push({
+                codigo: 'TAXA_CAMBIO_NAO_PUBLICADA',
+                chave: competencia,
+                reason: v.detalhe,
+                impacto: 'Publique a taxa ' + estadoTaxas.par + ' de ' + competencia
+                  + ' (data de referência ' + estadoTaxas.atual.data_referencia + ') pelo menu '
+                  + 'Finance OS > Publicar taxa do mês.'
+              });
+              return;
+            }
             bloqueios.push({
               codigo: v.codigo,
               chave: competencia,
@@ -6758,6 +6921,16 @@
               impacto: 'Invariante do fechamento não satisfeita.'
             });
           });
+          if (estadoTaxas.atual.publicada && !estadoTaxas.anterior.publicada) {
+            avisos.push({
+              codigo: 'TAXA_CAMBIO_ANTERIOR_NAO_PUBLICADA',
+              chave: estadoTaxas.anterior.competencia,
+              reason: estadoTaxas.anterior.reason,
+              impacto: 'O mês fecha, mas o efeito cambial fica null com motivo: '
+                + 'ele compara a taxa de ' + competencia + ' com a de '
+                + estadoTaxas.anterior.competencia + '.'
+            });
+          }
         } catch (e) {
           bloqueios.push({
             codigo: e.code || 'ERRO_DE_VALIDACAO',
@@ -6774,6 +6947,196 @@
         bloqueios: bloqueios,
         avisos: avisos,
         validacao: validacao
+      };
+    }
+
+    /**
+     * Estado das taxas relevantes para uma competência.
+     *
+     * Reporta DUAS taxas de propósito: o fechamento precisa da taxa da
+     * competência (para converter o patrimônio em moeda estrangeira) e da
+     * taxa da competência anterior (para separar o efeito cambial do
+     * resultado operacional). Sem a segunda o mês fecha, mas o efeito
+     * cambial fica null com motivo.
+     */
+    function taxasPublicadas(competencia) {
+      FOS.Dates.assertCompetencia(competencia);
+      var config = repo.config();
+      var configRows = repo.configLinhas();
+      var moedaGerencial = String(config.param('MOEDA_GERENCIAL').value || C.MOEDA.BRL).toUpperCase();
+      var moedaEstrangeira = C.MOEDA.GBP;
+      var parNome = FOS.Fx.par(moedaEstrangeira, moedaGerencial);
+      var anterior = FOS.Dates.addMonths(competencia, -1);
+
+      function estado(comp) {
+        var referencia = FOS.Dates.competenciaRange(comp).fim;
+        var vigente = FOS.Fx.vigenteDeCache(configRows, FOS.Fx.chaveCache(parNome, referencia));
+        var publicada = !!(vigente && vigente.status === 'ATIVO' && vigente.valor !== null);
+        return {
+          competencia: comp,
+          data_referencia: referencia,
+          publicada: publicada,
+          taxa: publicada ? vigente.valor : null,
+          data_cotacao: publicada ? vigente.data_cotacao : null,
+          versao: vigente ? vigente.versao : 0,
+          provedor: vigente ? vigente.modo_ingestao : null,
+          reason: publicada ? null : (vigente ? (vigente.reason || 'TAXA_BLOQUEADA') : 'TAXA_NAO_PUBLICADA')
+        };
+      }
+
+      return {
+        par: parNome,
+        moeda_estrangeira: moedaEstrangeira,
+        moeda_gerencial: moedaGerencial,
+        atual: estado(competencia),
+        anterior: estado(anterior)
+      };
+    }
+
+    /**
+     * Publica manualmente a taxa da competência (política MANUAL do V1).
+     *
+     * Contrato:
+     *  - a taxa PERTENCE à competência, não ao dia em que se fecha o mês: a
+     *    chave de cache é sempre o último dia calendário da competência;
+     *  - quem publica informa também o dia efetivo da cotação, que pode ser
+     *    anterior à data de referência quando não houve PTAX naquele dia. As
+     *    duas datas ficam gravadas — o sistema não adivinha dia útil;
+     *  - nada de rede: esta função não conhece UrlFetchApp;
+     *  - idempotente: republicar o mesmo valor e a mesma cotação não grava
+     *    linha nova;
+     *  - append-only: corrigir publica uma versão maior, sem apagar a
+     *    anterior. tabelaDeCache passa a enxergar a de maior versão;
+     *  - competência já fechada é recusada, salvo correção explícita
+     *    (permitirCompetenciaFechada + motivo), que só produz efeito quando
+     *    a competência for reapresentada.
+     */
+    function publicarTaxaCambio(params) {
+      var p = params || {};
+      var agora = relogio.agora();
+      var competencia = FOS.Dates.assertCompetencia(String(p.competencia || '').trim());
+      var config = repo.config();
+      var moedaGerencial = String(config.param('MOEDA_GERENCIAL').value || C.MOEDA.BRL).toUpperCase();
+      var moedaEstrangeira = String(p.moeda || C.MOEDA.GBP).toUpperCase();
+      if (moedaEstrangeira === moedaGerencial) {
+        FOS.Core.fail('TAXA_DESNECESSARIA',
+          'A moeda ' + moedaEstrangeira + ' é a própria moeda gerencial: a taxa é sempre 1.');
+      }
+
+      // A estrutura precisa expor data_cotacao, senão a data efetiva da PTAX
+      // se perderia silenciosamente na gravação.
+      if (repo.planilha && repo.planilha.cabecalhos) {
+        var colunas = repo.planilha.cabecalhos(A.CONFIG);
+        if (colunas.length && colunas.indexOf('data_cotacao') === -1) {
+          FOS.Core.fail('ESTRUTURA_DESATUALIZADA',
+            'A aba ' + A.CONFIG + ' ainda não tem a coluna data_cotacao. '
+            + 'Rode "Preparar planilha" no menu Finance OS e tente de novo.');
+        }
+      }
+
+      var dataReferencia = FOS.Dates.competenciaRange(competencia).fim;
+      var taxa = Number(p.taxa);
+      if (p.taxa === '' || p.taxa === null || p.taxa === undefined || !Number.isFinite(taxa) || taxa <= 0) {
+        FOS.Core.fail('TAXA_INVALIDA',
+          'Taxa inválida: ' + p.taxa + '. Informe um número positivo em '
+          + moedaGerencial + ' por 1 ' + moedaEstrangeira + '.');
+      }
+
+      var dataCotacao = String(p.dataCotacao || dataReferencia).trim();
+      FOS.Dates.assertIso(dataCotacao, 'data da cotação');
+      if (FOS.Dates.toDayNumber(dataCotacao) > FOS.Dates.toDayNumber(dataReferencia)) {
+        FOS.Core.fail('DATA_COTACAO_POSTERIOR',
+          'A cotação de ' + dataCotacao + ' é posterior à data de referência ' + dataReferencia
+          + ': a taxa de uma competência não pode vir do futuro.',
+          { competencia: competencia, data_referencia: dataReferencia });
+      }
+      if (FOS.Dates.competenciaOf(dataCotacao) !== competencia) {
+        FOS.Core.fail('DATA_COTACAO_FORA_DA_COMPETENCIA',
+          'A cotação de ' + dataCotacao + ' não pertence à competência ' + competencia
+          + '. O último dia útil anterior a ' + dataReferencia + ' está sempre dentro do mês.',
+          { competencia: competencia, data_referencia: dataReferencia });
+      }
+
+      var fechada = competenciasFechadas().indexOf(competencia) !== -1;
+      if (fechada && p.permitirCompetenciaFechada !== true) {
+        FOS.Core.fail('PERIODO_FECHADO',
+          'A competência ' + competencia + ' já está fechada e o fechamento guardou a taxa da época. '
+          + 'Corrigir a taxa exige reapresentação (restatement) explícita.',
+          { competencia: competencia });
+      }
+      var motivo = String(p.motivo || '').trim();
+      if (fechada && !motivo) {
+        FOS.Core.fail('MOTIVO_OBRIGATORIO',
+          'Corrigir a taxa de uma competência fechada exige um motivo registrado.');
+      }
+
+      var parNome = FOS.Fx.par(moedaEstrangeira, moedaGerencial);
+      var chave = FOS.Fx.chaveCache(parNome, dataReferencia);
+      var configRows = repo.configLinhas();
+      var vigente = FOS.Fx.vigenteDeCache(configRows, chave);
+      var provedor = String(config.param('PROVEDOR_TAXA_CAMBIO').value || 'PTAX').toUpperCase();
+
+      var antes = vigente
+        ? { taxa: vigente.valor, data_cotacao: vigente.data_cotacao, versao: vigente.versao, status: vigente.status }
+        : null;
+
+      if (vigente && vigente.status === 'ATIVO'
+        && vigente.valor === taxa && vigente.data_cotacao === dataCotacao) {
+        auditoria.registrar({
+          acao: 'PUBLICAR_TAXA_CAMBIO',
+          ator: p.ator || ator,
+          entidade: A.CONFIG,
+          entidade_id: chave,
+          antes: antes,
+          depois: antes,
+          resultado: 'SEM_MUDANCA',
+          detalhe: {
+            competencia: competencia, data_referencia: dataReferencia,
+            data_cotacao: dataCotacao, taxa: taxa,
+            observacao: 'Publicação idempotente: a taxa vigente já era essa.'
+          }
+        });
+        auditoria.persistir();
+        return {
+          ok: true, alterado: false, resultado: 'SEM_MUDANCA',
+          competencia: competencia, chave: chave, par: parNome,
+          data_referencia: dataReferencia, data_cotacao: dataCotacao,
+          taxa: taxa, versao: vigente.versao, provedor: provedor
+        };
+      }
+
+      var versao = FOS.Fx.versaoDeCache(configRows, chave) + 1;
+      var linha = FOS.Fx.linhaDeCache(moedaEstrangeira, moedaGerencial, dataReferencia,
+        taxa, provedor, agora, null, { versao: versao, dataCotacao: dataCotacao });
+      repo.anexar(A.CONFIG, [linha]);
+
+      var resultado = fechada ? 'CORRECAO_POS_FECHAMENTO' : (vigente ? 'CORRIGIDA' : 'OK');
+      auditoria.registrar({
+        acao: 'PUBLICAR_TAXA_CAMBIO',
+        ator: p.ator || ator,
+        entidade: A.CONFIG,
+        entidade_id: chave,
+        antes: antes,
+        depois: { taxa: taxa, data_cotacao: dataCotacao, versao: versao, status: 'ATIVO' },
+        resultado: resultado,
+        detalhe: {
+          competencia: competencia,
+          data_referencia: dataReferencia,
+          data_cotacao: dataCotacao,
+          provedor: provedor,
+          politica: String(config.param('POLITICA_TAXA_CAMBIO').value || 'MANUAL').toUpperCase(),
+          motivo: motivo || null,
+          competencia_fechada: fechada
+        }
+      });
+      auditoria.persistir();
+
+      return {
+        ok: true, alterado: true, resultado: resultado,
+        competencia: competencia, chave: chave, par: parNome,
+        data_referencia: dataReferencia, data_cotacao: dataCotacao,
+        taxa: taxa, versao: versao, provedor: provedor,
+        substituiu: antes
       };
     }
 
@@ -6806,8 +7169,13 @@
           return;
         }
         var externo = provedor.externo.obter(moedaEstrangeira, moedaGerencial, data);
+        // Mesmo versionamento da publicação manual: uma tentativa que falhou
+        // antes deixou uma linha BLOQUEADA, e a nova precisa de versão maior
+        // para prevalecer sobre ela sem depender da ordem das linhas.
+        var chaveData = FOS.Fx.chaveCache(FOS.Fx.par(moedaEstrangeira, moedaGerencial), data);
         novas.push(FOS.Fx.linhaDeCache(moedaEstrangeira, moedaGerencial, data,
-          externo.value, provedor.externo.nome, agora, externo.reason));
+          externo.value, provedor.externo.nome, agora, externo.reason,
+          { versao: FOS.Fx.versaoDeCache(configRows.concat(novas), chaveData) + 1 }));
         if (externo.value === null) faltando.push({ data: data, reason: externo.reason });
       });
 
@@ -6975,6 +7343,8 @@
       compensarEventoPosicao: compensarEventoPosicao,
       diagnosticoSetup: diagnosticoSetup,
       atualizarCacheTaxas: atualizarCacheTaxas,
+      publicarTaxaCambio: publicarTaxaCambio,
+      taxasPublicadas: taxasPublicadas,
       painel: painel,
       atualizarSuperficies: atualizarSuperficies
     };
@@ -7033,6 +7403,7 @@ function onOpen() {
     .addItem('Revisar pendências', 'fosRevisarPendencias')
     .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
     .addItem('Registrar evento', 'fosRegistrarEvento')
+    .addItem('Publicar taxa do mês', 'fosPublicarTaxaCambio')
     .addItem('Fechar mês', 'fosFecharMes')
     .addSeparator()
     .addItem('Abrir painel', 'fosAbrirPainel')
@@ -7234,6 +7605,141 @@ function fosRegistrarEvento() {
     _fosUi().ButtonSet.OK);
 }
 
+/**
+ * Publicar taxa do mês: única porta para materializar a cotação GBP→BRL.
+ *
+ * A política do V1 é MANUAL e offline. O usuário consulta a PTAX oficial,
+ * publica aqui, e o fechamento passa a ler essa taxa da planilha. Nenhuma
+ * consulta à internet acontece — nem aqui, nem no fechamento.
+ *
+ * Este comando existe para que ninguém precise editar a aba 00 à mão: a
+ * chave, a versão e a data de referência são responsabilidade do sistema.
+ */
+function fosPublicarTaxaCambio() {
+  var ui = _fosUi();
+  var amb = _fosAmbiente();
+
+  var sugestao = FOS.Dates.competenciaOf(String(amb.relogio.hoje()));
+  var competencia = ui.prompt(
+    'Publicar taxa do mês (1 de 3)',
+    'Para qual competência? (AAAA-MM)\n\nSugestão: ' + sugestao,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (competencia.getSelectedButton() !== ui.Button.OK) return;
+  var comp = competencia.getResponseText().trim();
+
+  var estado;
+  try {
+    estado = amb.workflows.taxasPublicadas(comp);
+  } catch (e) {
+    ui.alert('Publicar taxa do mês', e.message, ui.ButtonSet.OK);
+    return;
+  }
+
+  var taxa = ui.prompt(
+    'Publicar taxa do mês (2 de 3)',
+    'Taxa ' + estado.par + ' de ' + comp + '.'
+      + '\nQuantos ' + estado.moeda_gerencial + ' por 1 ' + estado.moeda_estrangeira + '?'
+      + '\n\nData de referência da competência: ' + estado.atual.data_referencia
+      + (estado.atual.publicada
+        ? '\nJá publicada: ' + estado.atual.taxa + ' (cotação de ' + estado.atual.data_cotacao
+          + ', versão ' + estado.atual.versao + ')'
+        : '\nAinda não publicada.'),
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (taxa.getSelectedButton() !== ui.Button.OK) return;
+
+  var cotacao = ui.prompt(
+    'Publicar taxa do mês (3 de 3)',
+    'De que dia é essa cotação? (AAAA-MM-DD)'
+      + '\n\nSe houve PTAX em ' + estado.atual.data_referencia + ', use essa data.'
+      + '\nSe não houve (fim de semana ou feriado), informe o último dia útil anterior.'
+      + '\n\nO sistema não adivinha dia útil: a data que você informar fica gravada.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (cotacao.getSelectedButton() !== ui.Button.OK) return;
+  var dataCotacao = cotacao.getResponseText().trim() || estado.atual.data_referencia;
+
+  var pedido = {
+    competencia: comp,
+    taxa: taxa.getResponseText().trim().replace(',', '.'),
+    dataCotacao: dataCotacao,
+    ator: 'USUARIO'
+  };
+
+  var confirmacao = ui.alert(
+    'Confirmar publicação',
+    'Competência: ' + comp
+      + '\nPar: ' + estado.par
+      + '\nTaxa: ' + pedido.taxa
+      + '\nData de referência: ' + estado.atual.data_referencia
+      + '\nCotação efetiva: ' + dataCotacao
+      + '\n\nPublicar?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmacao !== ui.Button.YES) return;
+
+  try {
+    _fosPublicarTaxaEAvisar(ui, amb, pedido, estado);
+  } catch (e) {
+    if (e.code !== 'PERIODO_FECHADO') {
+      ui.alert('Não foi possível publicar a taxa', e.message, ui.ButtonSet.OK);
+      return;
+    }
+    // Competência fechada: o fechamento já guardou a taxa da época. Corrigir
+    // só faz sentido junto de uma reapresentação, e exige motivo registrado.
+    var corrigir = ui.alert('Competência já fechada',
+      e.message + '\n\nPublicar mesmo assim como correção?'
+      + '\nA taxa só passa a valer quando você reapresentar ' + comp + '.',
+      ui.ButtonSet.YES_NO);
+    if (corrigir !== ui.Button.YES) return;
+    var motivo = ui.prompt('Correção de taxa',
+      'Por que a taxa de ' + comp + ' está sendo corrigida?\nO motivo fica no log de auditoria.',
+      ui.ButtonSet.OK_CANCEL);
+    if (motivo.getSelectedButton() !== ui.Button.OK) return;
+    if (!motivo.getResponseText().trim()) {
+      ui.alert('Publicar taxa do mês',
+        'Nada foi gravado: a correção exige um motivo explícito.', ui.ButtonSet.OK);
+      return;
+    }
+    pedido.permitirCompetenciaFechada = true;
+    pedido.motivo = motivo.getResponseText().trim();
+    try {
+      _fosPublicarTaxaEAvisar(ui, amb, pedido, estado);
+    } catch (e2) {
+      ui.alert('Não foi possível publicar a taxa', e2.message, ui.ButtonSet.OK);
+    }
+  }
+}
+
+/** Executa a publicação e relata o resultado, incluindo a taxa do mês anterior. */
+function _fosPublicarTaxaEAvisar(ui, amb, pedido, estado) {
+  var r = amb.workflows.publicarTaxaCambio(pedido);
+  if (!r.alterado) {
+    ui.alert('Publicar taxa do mês',
+      'A taxa vigente de ' + r.competencia + ' já era ' + r.taxa
+      + ' (cotação de ' + r.data_cotacao + '). Nada foi gravado.',
+      ui.ButtonSet.OK);
+    return;
+  }
+  var linhas = ['Taxa ' + r.par + ' de ' + r.competencia + ': ' + r.taxa];
+  linhas.push('Data de referência: ' + r.data_referencia);
+  linhas.push('Cotação efetiva: ' + r.data_cotacao);
+  linhas.push('Versão publicada: ' + r.versao
+    + (r.substituiu ? ' (a versão ' + r.substituiu.versao + ' foi preservada no histórico)' : ''));
+  if (r.resultado === 'CORRECAO_POS_FECHAMENTO') {
+    linhas.push('');
+    linhas.push('A competência está fechada: a correção só vale após reapresentar ' + r.competencia + '.');
+  }
+  if (!estado.anterior.publicada) {
+    linhas.push('');
+    linhas.push('Falta a taxa de ' + estado.anterior.competencia
+      + ' (referência ' + estado.anterior.data_referencia + ').');
+    linhas.push('Sem ela o mês fecha, mas o efeito cambial fica indisponível com motivo.');
+  }
+  ui.alert('Taxa publicada', linhas.join('\n'), ui.ButtonSet.OK);
+}
+
 function fosFecharMes() {
   var ui = _fosUi();
   var resposta = ui.prompt('Fechar mês', 'Qual competência? (AAAA-MM)', ui.ButtonSet.OK_CANCEL);
@@ -7248,10 +7754,18 @@ function fosFecharMes() {
         competencia + ' está fechado e congelado.\nChecksum: ' + r.fechamento.checksum,
         ui.ButtonSet.OK);
     } else {
+      var faltaTaxa = r.validacao.violacoes.some(function (v) {
+        return v.codigo === 'TAXA_CAMBIAL_DISPONIVEL';
+      });
       ui.alert('Ainda não dá para fechar',
         'Resolva antes:\n' + r.validacao.violacoes.map(function (v) {
           return '- ' + v.codigo + (v.detalhe ? ': ' + v.detalhe : '');
-        }).join('\n'), ui.ButtonSet.OK);
+        }).join('\n')
+        + (faltaTaxa
+          ? '\n\nA taxa do mês não está publicada. Use "Publicar taxa do mês" no menu '
+            + 'Finance OS — não edite a aba 00 à mão.'
+          : ''),
+        ui.ButtonSet.OK);
     }
   } catch (e) {
     ui.alert('Não foi possível fechar', e.message, ui.ButtonSet.OK);

@@ -80,7 +80,8 @@
     parametro('COMPETENCIA_INICIAL_CAIXA_VIDA', '2026-01', 'TEXTO', '', 'Competência a partir da qual o ledger conta para o caixa.'),
     parametro('MAX_IDADE_VIEWMODEL_DIAS', 45, 'NUMERO', 'dias', 'Acima disso o dashboard marca o dado como STALE.'),
     parametro('POLITICA_TAXA_CAMBIO', 'MANUAL', 'TEXTO', '',
-      'MANUAL usa apenas as taxas materializadas na planilha; HTTP consulta o provedor configurado.'),
+      'MANUAL usa apenas as taxas publicadas pelo menu Finance OS > Publicar taxa do mês; '
+      + 'HTTP consulta o provedor configurado.'),
     parametro('URL_PROVEDOR_TAXA_CAMBIO', '', 'TEXTO', '',
       'URL https do provedor de taxa, com {data} e {moeda}.', C.STATUS_PARAMETRO.BLOQUEADO,
       'POLITICA_MANUAL_NO_V1'),

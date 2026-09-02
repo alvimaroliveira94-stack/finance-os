@@ -1068,8 +1068,22 @@
       var validacao = null;
       if (competencia) {
         try {
+          var estadoTaxas = taxasPublicadas(competencia);
           validacao = FOS.Closing.validar(montarContexto(competencia));
           validacao.violacoes.forEach(function (v) {
+            // A falta de taxa é o bloqueio mais comum e o mais fácil de
+            // resolver: vale dizer o que fazer, não só qual invariante falhou.
+            if (v.codigo === 'TAXA_CAMBIAL_DISPONIVEL') {
+              bloqueios.push({
+                codigo: 'TAXA_CAMBIO_NAO_PUBLICADA',
+                chave: competencia,
+                reason: v.detalhe,
+                impacto: 'Publique a taxa ' + estadoTaxas.par + ' de ' + competencia
+                  + ' (data de referência ' + estadoTaxas.atual.data_referencia + ') pelo menu '
+                  + 'Finance OS > Publicar taxa do mês.'
+              });
+              return;
+            }
             bloqueios.push({
               codigo: v.codigo,
               chave: competencia,
@@ -1077,6 +1091,16 @@
               impacto: 'Invariante do fechamento não satisfeita.'
             });
           });
+          if (estadoTaxas.atual.publicada && !estadoTaxas.anterior.publicada) {
+            avisos.push({
+              codigo: 'TAXA_CAMBIO_ANTERIOR_NAO_PUBLICADA',
+              chave: estadoTaxas.anterior.competencia,
+              reason: estadoTaxas.anterior.reason,
+              impacto: 'O mês fecha, mas o efeito cambial fica null com motivo: '
+                + 'ele compara a taxa de ' + competencia + ' com a de '
+                + estadoTaxas.anterior.competencia + '.'
+            });
+          }
         } catch (e) {
           bloqueios.push({
             codigo: e.code || 'ERRO_DE_VALIDACAO',
@@ -1093,6 +1117,196 @@
         bloqueios: bloqueios,
         avisos: avisos,
         validacao: validacao
+      };
+    }
+
+    /**
+     * Estado das taxas relevantes para uma competência.
+     *
+     * Reporta DUAS taxas de propósito: o fechamento precisa da taxa da
+     * competência (para converter o patrimônio em moeda estrangeira) e da
+     * taxa da competência anterior (para separar o efeito cambial do
+     * resultado operacional). Sem a segunda o mês fecha, mas o efeito
+     * cambial fica null com motivo.
+     */
+    function taxasPublicadas(competencia) {
+      FOS.Dates.assertCompetencia(competencia);
+      var config = repo.config();
+      var configRows = repo.configLinhas();
+      var moedaGerencial = String(config.param('MOEDA_GERENCIAL').value || C.MOEDA.BRL).toUpperCase();
+      var moedaEstrangeira = C.MOEDA.GBP;
+      var parNome = FOS.Fx.par(moedaEstrangeira, moedaGerencial);
+      var anterior = FOS.Dates.addMonths(competencia, -1);
+
+      function estado(comp) {
+        var referencia = FOS.Dates.competenciaRange(comp).fim;
+        var vigente = FOS.Fx.vigenteDeCache(configRows, FOS.Fx.chaveCache(parNome, referencia));
+        var publicada = !!(vigente && vigente.status === 'ATIVO' && vigente.valor !== null);
+        return {
+          competencia: comp,
+          data_referencia: referencia,
+          publicada: publicada,
+          taxa: publicada ? vigente.valor : null,
+          data_cotacao: publicada ? vigente.data_cotacao : null,
+          versao: vigente ? vigente.versao : 0,
+          provedor: vigente ? vigente.modo_ingestao : null,
+          reason: publicada ? null : (vigente ? (vigente.reason || 'TAXA_BLOQUEADA') : 'TAXA_NAO_PUBLICADA')
+        };
+      }
+
+      return {
+        par: parNome,
+        moeda_estrangeira: moedaEstrangeira,
+        moeda_gerencial: moedaGerencial,
+        atual: estado(competencia),
+        anterior: estado(anterior)
+      };
+    }
+
+    /**
+     * Publica manualmente a taxa da competência (política MANUAL do V1).
+     *
+     * Contrato:
+     *  - a taxa PERTENCE à competência, não ao dia em que se fecha o mês: a
+     *    chave de cache é sempre o último dia calendário da competência;
+     *  - quem publica informa também o dia efetivo da cotação, que pode ser
+     *    anterior à data de referência quando não houve PTAX naquele dia. As
+     *    duas datas ficam gravadas — o sistema não adivinha dia útil;
+     *  - nada de rede: esta função não conhece UrlFetchApp;
+     *  - idempotente: republicar o mesmo valor e a mesma cotação não grava
+     *    linha nova;
+     *  - append-only: corrigir publica uma versão maior, sem apagar a
+     *    anterior. tabelaDeCache passa a enxergar a de maior versão;
+     *  - competência já fechada é recusada, salvo correção explícita
+     *    (permitirCompetenciaFechada + motivo), que só produz efeito quando
+     *    a competência for reapresentada.
+     */
+    function publicarTaxaCambio(params) {
+      var p = params || {};
+      var agora = relogio.agora();
+      var competencia = FOS.Dates.assertCompetencia(String(p.competencia || '').trim());
+      var config = repo.config();
+      var moedaGerencial = String(config.param('MOEDA_GERENCIAL').value || C.MOEDA.BRL).toUpperCase();
+      var moedaEstrangeira = String(p.moeda || C.MOEDA.GBP).toUpperCase();
+      if (moedaEstrangeira === moedaGerencial) {
+        FOS.Core.fail('TAXA_DESNECESSARIA',
+          'A moeda ' + moedaEstrangeira + ' é a própria moeda gerencial: a taxa é sempre 1.');
+      }
+
+      // A estrutura precisa expor data_cotacao, senão a data efetiva da PTAX
+      // se perderia silenciosamente na gravação.
+      if (repo.planilha && repo.planilha.cabecalhos) {
+        var colunas = repo.planilha.cabecalhos(A.CONFIG);
+        if (colunas.length && colunas.indexOf('data_cotacao') === -1) {
+          FOS.Core.fail('ESTRUTURA_DESATUALIZADA',
+            'A aba ' + A.CONFIG + ' ainda não tem a coluna data_cotacao. '
+            + 'Rode "Preparar planilha" no menu Finance OS e tente de novo.');
+        }
+      }
+
+      var dataReferencia = FOS.Dates.competenciaRange(competencia).fim;
+      var taxa = Number(p.taxa);
+      if (p.taxa === '' || p.taxa === null || p.taxa === undefined || !Number.isFinite(taxa) || taxa <= 0) {
+        FOS.Core.fail('TAXA_INVALIDA',
+          'Taxa inválida: ' + p.taxa + '. Informe um número positivo em '
+          + moedaGerencial + ' por 1 ' + moedaEstrangeira + '.');
+      }
+
+      var dataCotacao = String(p.dataCotacao || dataReferencia).trim();
+      FOS.Dates.assertIso(dataCotacao, 'data da cotação');
+      if (FOS.Dates.toDayNumber(dataCotacao) > FOS.Dates.toDayNumber(dataReferencia)) {
+        FOS.Core.fail('DATA_COTACAO_POSTERIOR',
+          'A cotação de ' + dataCotacao + ' é posterior à data de referência ' + dataReferencia
+          + ': a taxa de uma competência não pode vir do futuro.',
+          { competencia: competencia, data_referencia: dataReferencia });
+      }
+      if (FOS.Dates.competenciaOf(dataCotacao) !== competencia) {
+        FOS.Core.fail('DATA_COTACAO_FORA_DA_COMPETENCIA',
+          'A cotação de ' + dataCotacao + ' não pertence à competência ' + competencia
+          + '. O último dia útil anterior a ' + dataReferencia + ' está sempre dentro do mês.',
+          { competencia: competencia, data_referencia: dataReferencia });
+      }
+
+      var fechada = competenciasFechadas().indexOf(competencia) !== -1;
+      if (fechada && p.permitirCompetenciaFechada !== true) {
+        FOS.Core.fail('PERIODO_FECHADO',
+          'A competência ' + competencia + ' já está fechada e o fechamento guardou a taxa da época. '
+          + 'Corrigir a taxa exige reapresentação (restatement) explícita.',
+          { competencia: competencia });
+      }
+      var motivo = String(p.motivo || '').trim();
+      if (fechada && !motivo) {
+        FOS.Core.fail('MOTIVO_OBRIGATORIO',
+          'Corrigir a taxa de uma competência fechada exige um motivo registrado.');
+      }
+
+      var parNome = FOS.Fx.par(moedaEstrangeira, moedaGerencial);
+      var chave = FOS.Fx.chaveCache(parNome, dataReferencia);
+      var configRows = repo.configLinhas();
+      var vigente = FOS.Fx.vigenteDeCache(configRows, chave);
+      var provedor = String(config.param('PROVEDOR_TAXA_CAMBIO').value || 'PTAX').toUpperCase();
+
+      var antes = vigente
+        ? { taxa: vigente.valor, data_cotacao: vigente.data_cotacao, versao: vigente.versao, status: vigente.status }
+        : null;
+
+      if (vigente && vigente.status === 'ATIVO'
+        && vigente.valor === taxa && vigente.data_cotacao === dataCotacao) {
+        auditoria.registrar({
+          acao: 'PUBLICAR_TAXA_CAMBIO',
+          ator: p.ator || ator,
+          entidade: A.CONFIG,
+          entidade_id: chave,
+          antes: antes,
+          depois: antes,
+          resultado: 'SEM_MUDANCA',
+          detalhe: {
+            competencia: competencia, data_referencia: dataReferencia,
+            data_cotacao: dataCotacao, taxa: taxa,
+            observacao: 'Publicação idempotente: a taxa vigente já era essa.'
+          }
+        });
+        auditoria.persistir();
+        return {
+          ok: true, alterado: false, resultado: 'SEM_MUDANCA',
+          competencia: competencia, chave: chave, par: parNome,
+          data_referencia: dataReferencia, data_cotacao: dataCotacao,
+          taxa: taxa, versao: vigente.versao, provedor: provedor
+        };
+      }
+
+      var versao = FOS.Fx.versaoDeCache(configRows, chave) + 1;
+      var linha = FOS.Fx.linhaDeCache(moedaEstrangeira, moedaGerencial, dataReferencia,
+        taxa, provedor, agora, null, { versao: versao, dataCotacao: dataCotacao });
+      repo.anexar(A.CONFIG, [linha]);
+
+      var resultado = fechada ? 'CORRECAO_POS_FECHAMENTO' : (vigente ? 'CORRIGIDA' : 'OK');
+      auditoria.registrar({
+        acao: 'PUBLICAR_TAXA_CAMBIO',
+        ator: p.ator || ator,
+        entidade: A.CONFIG,
+        entidade_id: chave,
+        antes: antes,
+        depois: { taxa: taxa, data_cotacao: dataCotacao, versao: versao, status: 'ATIVO' },
+        resultado: resultado,
+        detalhe: {
+          competencia: competencia,
+          data_referencia: dataReferencia,
+          data_cotacao: dataCotacao,
+          provedor: provedor,
+          politica: String(config.param('POLITICA_TAXA_CAMBIO').value || 'MANUAL').toUpperCase(),
+          motivo: motivo || null,
+          competencia_fechada: fechada
+        }
+      });
+      auditoria.persistir();
+
+      return {
+        ok: true, alterado: true, resultado: resultado,
+        competencia: competencia, chave: chave, par: parNome,
+        data_referencia: dataReferencia, data_cotacao: dataCotacao,
+        taxa: taxa, versao: versao, provedor: provedor,
+        substituiu: antes
       };
     }
 
@@ -1125,8 +1339,13 @@
           return;
         }
         var externo = provedor.externo.obter(moedaEstrangeira, moedaGerencial, data);
+        // Mesmo versionamento da publicação manual: uma tentativa que falhou
+        // antes deixou uma linha BLOQUEADA, e a nova precisa de versão maior
+        // para prevalecer sobre ela sem depender da ordem das linhas.
+        var chaveData = FOS.Fx.chaveCache(FOS.Fx.par(moedaEstrangeira, moedaGerencial), data);
         novas.push(FOS.Fx.linhaDeCache(moedaEstrangeira, moedaGerencial, data,
-          externo.value, provedor.externo.nome, agora, externo.reason));
+          externo.value, provedor.externo.nome, agora, externo.reason,
+          { versao: FOS.Fx.versaoDeCache(configRows.concat(novas), chaveData) + 1 }));
         if (externo.value === null) faltando.push({ data: data, reason: externo.reason });
       });
 
@@ -1294,6 +1513,8 @@
       compensarEventoPosicao: compensarEventoPosicao,
       diagnosticoSetup: diagnosticoSetup,
       atualizarCacheTaxas: atualizarCacheTaxas,
+      publicarTaxaCambio: publicarTaxaCambio,
+      taxasPublicadas: taxasPublicadas,
       painel: painel,
       atualizarSuperficies: atualizarSuperficies
     };

@@ -138,14 +138,24 @@
     if (provedor && typeof provedor.tabela === 'function') {
       return FOS.Fx.resolver(provedor.tabela(), moedaEstrangeira, moedaGerencial, dataIso, provedor.nome);
     }
+    var chave = FOS.Fx.par(moedaEstrangeira, moedaGerencial);
     if (provedor && typeof provedor.obter === 'function') {
       var r = provedor.obter(moedaEstrangeira, moedaGerencial, dataIso);
       if (r.value === null) {
-        return { value: null, status: 'NULL', reason: r.reason || 'TAXA_INDISPONIVEL', provedor: provedor.nome, data: null };
+        return {
+          value: null, status: 'NULL', reason: r.reason || 'TAXA_INDISPONIVEL',
+          provedor: provedor.nome, data: null, data_cotacao: null, versao: null, par: chave
+        };
       }
-      return { value: r.value, status: 'OK', reason: null, provedor: provedor.nome, data: dataIso };
+      return {
+        value: r.value, status: 'OK', reason: null, provedor: provedor.nome,
+        data: dataIso, data_cotacao: dataIso, versao: null, par: chave
+      };
     }
-    return { value: null, status: 'NULL', reason: 'PROVEDOR_NAO_CONFIGURADO', provedor: null, data: null };
+    return {
+      value: null, status: 'NULL', reason: 'PROVEDOR_NAO_CONFIGURADO',
+      provedor: null, data: null, data_cotacao: null, versao: null, par: chave
+    };
   }
 
   FOS.Adapters.provedorManual = provedorManual;

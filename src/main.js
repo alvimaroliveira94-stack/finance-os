@@ -47,6 +47,7 @@ function onOpen() {
     .addItem('Revisar pendências', 'fosRevisarPendencias')
     .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
     .addItem('Registrar evento', 'fosRegistrarEvento')
+    .addItem('Publicar taxa do mês', 'fosPublicarTaxaCambio')
     .addItem('Fechar mês', 'fosFecharMes')
     .addSeparator()
     .addItem('Abrir painel', 'fosAbrirPainel')
@@ -248,6 +249,141 @@ function fosRegistrarEvento() {
     _fosUi().ButtonSet.OK);
 }
 
+/**
+ * Publicar taxa do mês: única porta para materializar a cotação GBP→BRL.
+ *
+ * A política do V1 é MANUAL e offline. O usuário consulta a PTAX oficial,
+ * publica aqui, e o fechamento passa a ler essa taxa da planilha. Nenhuma
+ * consulta à internet acontece — nem aqui, nem no fechamento.
+ *
+ * Este comando existe para que ninguém precise editar a aba 00 à mão: a
+ * chave, a versão e a data de referência são responsabilidade do sistema.
+ */
+function fosPublicarTaxaCambio() {
+  var ui = _fosUi();
+  var amb = _fosAmbiente();
+
+  var sugestao = FOS.Dates.competenciaOf(String(amb.relogio.hoje()));
+  var competencia = ui.prompt(
+    'Publicar taxa do mês (1 de 3)',
+    'Para qual competência? (AAAA-MM)\n\nSugestão: ' + sugestao,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (competencia.getSelectedButton() !== ui.Button.OK) return;
+  var comp = competencia.getResponseText().trim();
+
+  var estado;
+  try {
+    estado = amb.workflows.taxasPublicadas(comp);
+  } catch (e) {
+    ui.alert('Publicar taxa do mês', e.message, ui.ButtonSet.OK);
+    return;
+  }
+
+  var taxa = ui.prompt(
+    'Publicar taxa do mês (2 de 3)',
+    'Taxa ' + estado.par + ' de ' + comp + '.'
+      + '\nQuantos ' + estado.moeda_gerencial + ' por 1 ' + estado.moeda_estrangeira + '?'
+      + '\n\nData de referência da competência: ' + estado.atual.data_referencia
+      + (estado.atual.publicada
+        ? '\nJá publicada: ' + estado.atual.taxa + ' (cotação de ' + estado.atual.data_cotacao
+          + ', versão ' + estado.atual.versao + ')'
+        : '\nAinda não publicada.'),
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (taxa.getSelectedButton() !== ui.Button.OK) return;
+
+  var cotacao = ui.prompt(
+    'Publicar taxa do mês (3 de 3)',
+    'De que dia é essa cotação? (AAAA-MM-DD)'
+      + '\n\nSe houve PTAX em ' + estado.atual.data_referencia + ', use essa data.'
+      + '\nSe não houve (fim de semana ou feriado), informe o último dia útil anterior.'
+      + '\n\nO sistema não adivinha dia útil: a data que você informar fica gravada.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (cotacao.getSelectedButton() !== ui.Button.OK) return;
+  var dataCotacao = cotacao.getResponseText().trim() || estado.atual.data_referencia;
+
+  var pedido = {
+    competencia: comp,
+    taxa: taxa.getResponseText().trim().replace(',', '.'),
+    dataCotacao: dataCotacao,
+    ator: 'USUARIO'
+  };
+
+  var confirmacao = ui.alert(
+    'Confirmar publicação',
+    'Competência: ' + comp
+      + '\nPar: ' + estado.par
+      + '\nTaxa: ' + pedido.taxa
+      + '\nData de referência: ' + estado.atual.data_referencia
+      + '\nCotação efetiva: ' + dataCotacao
+      + '\n\nPublicar?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmacao !== ui.Button.YES) return;
+
+  try {
+    _fosPublicarTaxaEAvisar(ui, amb, pedido, estado);
+  } catch (e) {
+    if (e.code !== 'PERIODO_FECHADO') {
+      ui.alert('Não foi possível publicar a taxa', e.message, ui.ButtonSet.OK);
+      return;
+    }
+    // Competência fechada: o fechamento já guardou a taxa da época. Corrigir
+    // só faz sentido junto de uma reapresentação, e exige motivo registrado.
+    var corrigir = ui.alert('Competência já fechada',
+      e.message + '\n\nPublicar mesmo assim como correção?'
+      + '\nA taxa só passa a valer quando você reapresentar ' + comp + '.',
+      ui.ButtonSet.YES_NO);
+    if (corrigir !== ui.Button.YES) return;
+    var motivo = ui.prompt('Correção de taxa',
+      'Por que a taxa de ' + comp + ' está sendo corrigida?\nO motivo fica no log de auditoria.',
+      ui.ButtonSet.OK_CANCEL);
+    if (motivo.getSelectedButton() !== ui.Button.OK) return;
+    if (!motivo.getResponseText().trim()) {
+      ui.alert('Publicar taxa do mês',
+        'Nada foi gravado: a correção exige um motivo explícito.', ui.ButtonSet.OK);
+      return;
+    }
+    pedido.permitirCompetenciaFechada = true;
+    pedido.motivo = motivo.getResponseText().trim();
+    try {
+      _fosPublicarTaxaEAvisar(ui, amb, pedido, estado);
+    } catch (e2) {
+      ui.alert('Não foi possível publicar a taxa', e2.message, ui.ButtonSet.OK);
+    }
+  }
+}
+
+/** Executa a publicação e relata o resultado, incluindo a taxa do mês anterior. */
+function _fosPublicarTaxaEAvisar(ui, amb, pedido, estado) {
+  var r = amb.workflows.publicarTaxaCambio(pedido);
+  if (!r.alterado) {
+    ui.alert('Publicar taxa do mês',
+      'A taxa vigente de ' + r.competencia + ' já era ' + r.taxa
+      + ' (cotação de ' + r.data_cotacao + '). Nada foi gravado.',
+      ui.ButtonSet.OK);
+    return;
+  }
+  var linhas = ['Taxa ' + r.par + ' de ' + r.competencia + ': ' + r.taxa];
+  linhas.push('Data de referência: ' + r.data_referencia);
+  linhas.push('Cotação efetiva: ' + r.data_cotacao);
+  linhas.push('Versão publicada: ' + r.versao
+    + (r.substituiu ? ' (a versão ' + r.substituiu.versao + ' foi preservada no histórico)' : ''));
+  if (r.resultado === 'CORRECAO_POS_FECHAMENTO') {
+    linhas.push('');
+    linhas.push('A competência está fechada: a correção só vale após reapresentar ' + r.competencia + '.');
+  }
+  if (!estado.anterior.publicada) {
+    linhas.push('');
+    linhas.push('Falta a taxa de ' + estado.anterior.competencia
+      + ' (referência ' + estado.anterior.data_referencia + ').');
+    linhas.push('Sem ela o mês fecha, mas o efeito cambial fica indisponível com motivo.');
+  }
+  ui.alert('Taxa publicada', linhas.join('\n'), ui.ButtonSet.OK);
+}
+
 function fosFecharMes() {
   var ui = _fosUi();
   var resposta = ui.prompt('Fechar mês', 'Qual competência? (AAAA-MM)', ui.ButtonSet.OK_CANCEL);
@@ -262,10 +398,18 @@ function fosFecharMes() {
         competencia + ' está fechado e congelado.\nChecksum: ' + r.fechamento.checksum,
         ui.ButtonSet.OK);
     } else {
+      var faltaTaxa = r.validacao.violacoes.some(function (v) {
+        return v.codigo === 'TAXA_CAMBIAL_DISPONIVEL';
+      });
       ui.alert('Ainda não dá para fechar',
         'Resolva antes:\n' + r.validacao.violacoes.map(function (v) {
           return '- ' + v.codigo + (v.detalhe ? ': ' + v.detalhe : '');
-        }).join('\n'), ui.ButtonSet.OK);
+        }).join('\n')
+        + (faltaTaxa
+          ? '\n\nA taxa do mês não está publicada. Use "Publicar taxa do mês" no menu '
+            + 'Finance OS — não edite a aba 00 à mão.'
+          : ''),
+        ui.ButtonSet.OK);
     }
   } catch (e) {
     ui.alert('Não foi possível fechar', e.message, ui.ButtonSet.OK);

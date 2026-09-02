@@ -309,7 +309,13 @@
         par: ctx.taxa && ctx.taxa.par ? ctx.taxa.par : FOS.Fx.par(C.MOEDA.GBP, moedaGerencial),
         provedor: ctx.taxa ? ctx.taxa.provedor : null,
         taxa: ctx.taxa ? ctx.taxa.value : null,
+        // data_taxa é a data de REFERÊNCIA da competência; data_cotacao é o dia
+        // efetivo da cotação usada. Elas divergem quando não houve PTAX no
+        // último dia do mês — o snapshot guarda as duas para que a reapresentação
+        // reproduza a decisão original.
         data_taxa: ctx.taxa ? ctx.taxa.data : null,
+        data_cotacao: ctx.taxa ? (ctx.taxa.data_cotacao || null) : null,
+        versao_taxa: ctx.taxa ? (ctx.taxa.versao || null) : null,
         reason: ctx.taxa ? ctx.taxa.reason : 'TAXA_NAO_INFORMADA',
         efeito_cambial_brl: managed(efeito)
       },

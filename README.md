@@ -165,7 +165,7 @@ Patrimônio → Histórico.
 | Materializar eventos | `NOVA_OBRIGACAO` e `NOVO_OBJETIVO` viram nova versão em `30`/`31`; `APORTE_POSICAO` e `RETIRADA_POSICAO` viram evento em `32`. Roda quantas vezes quiser sem duplicar. |
 | Registrar evento de posição | `DISTRIBUICAO` e `SNAPSHOT_VALOR_MERCADO` entram à mão. Correção só por evento compensatório. |
 | Diagnóstico de setup | Lista os parâmetros nulos/bloqueados, o impacto de cada um e as invariantes que ainda travam o fechamento. |
-| Cache de taxa | Política configurável (`MANUAL` por padrão). Em `HTTP`, consulta o provedor parametrizado, materializa a taxa na aba `00` e reusa o cache. Falha vira `null` + motivo — o fechamento continua bloqueado. |
+| Cache de taxa | Política configurável (`MANUAL` por padrão). Em `MANUAL`, a taxa entra pelo menu **Publicar taxa do mês**: append-only, versionada e auditada, com a data de referência e a data efetiva da cotação separadas. Em `HTTP`, consulta o provedor parametrizado e materializa na aba `00`. Falha vira `null` + motivo — o fechamento continua bloqueado. |
 
 ---
 
@@ -219,20 +219,41 @@ O projeto do Apps Script precisa de **três coisas**, nada mais:
    Parâmetros que você ainda não decidiu devem ficar com `status = BLOQUEADO` e um `reason` —
    o sistema respeita isso e devolve `null` em vez de inventar número.
 7. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
-8. Use **Revisar pendências**, **Registrar evento** e **Fechar mês**; depois **Abrir painel**.
+8. Use **Revisar pendências** e **Registrar evento**; publique a cotação do mês em
+   **Publicar taxa do mês**; então **Fechar mês** e **Abrir painel**.
 
-**Antes do primeiro fechamento com posição ou saldo em moeda estrangeira**, a taxa
-precisa existir na aba `00` (linhas com `secao = TAXA`, chave `BRL/GBP@AAAA-MM-DD`).
-Com a política padrão `MANUAL` você preenche essas linhas à mão. O fechamento é
-**offline por decisão**: ele lê a taxa materializada e nunca busca cotação sozinho.
-Sem taxa para a data exata, o mês não fecha e o motivo aparece no diagnóstico.
+**Antes do primeiro fechamento com posição ou saldo em moeda estrangeira**, publique
+a taxa pelo menu **Finance OS → Publicar taxa do mês**. Nunca edite as linhas de taxa
+da aba `00` à mão: a chave, a versão e a data de referência são responsabilidade do
+sistema.
+
+A política do câmbio GBP→BRL é esta:
+
+- a taxa **pertence à competência**, não ao dia em que você fecha o mês;
+- a **data de referência** é o último dia calendário da competência (`BRL/GBP@2026-01-31`);
+- havendo PTAX nessa data, é ela; **não havendo** (fim de semana ou feriado), use a PTAX
+  do último dia útil anterior;
+- você informa a taxa **e o dia efetivo da cotação**. O sistema grava as duas datas e
+  **não adivinha dia útil** — não existe fallback silencioso;
+- o fechamento precisa de **duas** taxas: a da competência (para converter o patrimônio)
+  e a da competência anterior (para separar o efeito cambial do resultado operacional).
+  Sem a segunda o mês fecha, mas o efeito cambial fica `null` com motivo, e o diagnóstico avisa.
+
+Corrigir uma taxa publica uma **versão maior**, sem apagar a anterior; a versão vigente é
+sempre a de maior número, nunca a última linha da planilha. Competência já fechada é
+recusada: a taxa da época fica preservada, e a correção só passa a valer por reapresentação
+(restatement) explícita e com motivo registrado.
+
+O fechamento é **offline por decisão**: ele lê a taxa materializada e nunca busca cotação
+sozinho. Sem taxa para a data de referência, o mês não fecha e o motivo aparece no diagnóstico.
 
 Os meses fecham **em ordem cronológica**: o sistema recusa fechar um mês deixando
 um mês anterior com movimento ainda em aberto, porque o estado do ciclo depende de
 fechamentos consecutivos.
 
-O menu tem sete ações, em linguagem direta: Preparar planilha, Importar extrato,
-Revisar pendências, Registrar evento, Fechar mês, Abrir painel e Atualizar abas.
+O menu tem nove ações, em linguagem direta: Preparar planilha, Importar extrato,
+Revisar pendências, Reclassificar movimentação, Registrar evento, Publicar taxa do mês,
+Fechar mês, Abrir painel e Atualizar abas.
 
 Escopos declarados no manifesto: `spreadsheets.currentonly`, `script.container.ui` e
 `drive.readonly` (necessário para ler o arquivo de extrato pelo nome). Se preferir escopo

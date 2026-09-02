@@ -419,7 +419,9 @@ describe('Taxa de câmbio: política e cache', () => {
     assert.equal(r.faltando.length, 0);
 
     const cache = FOS.Fx.tabelaDeCache(ctx.repositorio.configLinhas());
-    assert.equal(cache['BRL/GBP']['2026-01-31'], 6.31);
+    assert.equal(cache['BRL/GBP']['2026-01-31'].valor, 6.31);
+    assert.equal(cache['BRL/GBP']['2026-01-31'].versao, 1);
+    assert.equal(cache['BRL/GBP']['2026-01-31'].provedor, 'PTAX');
 
     // Segunda chamada usa o cache: nenhuma consulta nova.
     const chamadasAntes = fetch.chamadas.length;
@@ -445,6 +447,20 @@ describe('Taxa de câmbio: política e cache', () => {
     assert.includes(r.faltando[0].reason, 'PROVEDOR_HTTP_404');
     const cache = FOS.Fx.tabelaDeCache(ctx.repositorio.configLinhas());
     assert.notOk(cache['BRL/GBP'] && cache['BRL/GBP']['2026-01-31'], 'taxa ausente não vira número');
+
+    // Quando o provedor volta, a nova tentativa precisa de versão maior para
+    // prevalecer sobre a linha BLOQUEADA que ficou da tentativa anterior.
+    const workflowsOk = FOS.App.criarWorkflows({
+      repositorio: ctx.repositorio, relogio: ctx.relogio, ator: 'TESTE',
+      auditoria: ctx.auditoria,
+      urlFetchApp: urlFetchFake({
+        'https://exemplo.invalido/2026-01-31': { codigo: 200, corpo: '{"taxa":6.31}' }
+      })
+    });
+    assert.equal(workflowsOk.atualizarCacheTaxas({ datas: ['2026-01-31'] }).gravadas, 1);
+    const depois = FOS.Fx.tabelaDeCache(ctx.repositorio.configLinhas());
+    assert.equal(depois['BRL/GBP']['2026-01-31'].valor, 6.31);
+    assert.equal(depois['BRL/GBP']['2026-01-31'].versao, 2);
   });
 
   it('URL sem https é recusada antes de qualquer chamada', { scenario: 'C45' }, () => {
