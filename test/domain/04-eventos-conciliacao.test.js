@@ -131,7 +131,8 @@ describe('Conciliação', () => {
     });
     assert.equal(r.conciliacoes.length, 0);
     assert.equal(r.pendentes[0].motivo, 'CONCILIACAO_SEM_CANDIDATO');
-    assert.equal(r.itensFila.length, 1);
+    assert.equal(r.itensFila.length, 0,
+      'falta de candidato não é ambiguidade: quem cobra é a invariante do fechamento');
   });
 
   it('não concilia com valor diferente nem com conta diferente', { scenario: 'C08' }, () => {

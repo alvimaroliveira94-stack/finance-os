@@ -15,7 +15,7 @@ const filtro = (argv.find((a) => a.startsWith('--filter=')) || '').split('=')[1]
 const somenteCenarios = argv.includes('--scenarios');
 
 const raiz = path.join(__dirname, '..', 'test');
-const diretorios = ['domain', 'integration'].filter((d) => !filtro || d.indexOf(filtro) !== -1);
+const diretorios = ['domain', 'ui', 'integration'].filter((d) => !filtro || d.indexOf(filtro) !== -1);
 
 globalThis.__fosTest = runner;
 

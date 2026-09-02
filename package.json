@@ -9,6 +9,8 @@
     "test:domain": "node tools/test.js --filter=domain",
     "test:integration": "node tools/test.js --filter=integration",
     "scenarios": "node tools/test.js --scenarios",
+    "preview": "node tools/preview.js",
+    "qa:visual": "node tools/preview.js && node tools/qa-visual.js",
     "seed": "node tools/seed.js"
   },
   "engines": { "node": ">=18" },

@@ -26,31 +26,107 @@
   }
 
   /**
-   * Provedor HTTP genérico (PTAX ou equivalente).
-   * @param {Object} urlFetchApp
-   * @param {{url:string, extrair:Function, nome?:string}} opcoes
-   *   extrair(respostaTexto, data) -> number|null
+   * Provedor de cache: lê as taxas já materializadas na aba 00.
+   * É sempre consultado ANTES do provedor externo, para que reprocessar um
+   * fechamento antigo use a mesma taxa usada na época.
+   */
+  function provedorCache(configRows) {
+    return {
+      nome: 'CACHE',
+      tabela: function () { return FOS.Fx.tabelaDeCache(configRows); }
+    };
+  }
+
+  /**
+   * Provedor HTTP parametrizado (PTAX ou equivalente).
+   *
+   * Contrato de segurança:
+   *  - a URL vem da configuração, nunca do código;
+   *  - só aceita https;
+   *  - qualquer falha (rede, HTTP != 200, corpo inesperado, estouro de
+   *    tempo) devolve null + reason. Nunca inventa taxa, nunca repete a
+   *    taxa de outro dia;
+   *  - nenhuma credencial é enviada ou armazenada.
+   *
+   * @param {Object} urlFetchApp adaptador de rede
+   * @param {{url:string, extrair:Function, nome?:string, timeoutMs?:number, relogio?:Object}} opcoes
    */
   function provedorHttp(urlFetchApp, opcoes) {
+    var opts = opcoes || {};
     return {
-      nome: opcoes.nome || 'PTAX',
+      nome: opts.nome || 'PTAX',
       obter: function (moedaEstrangeira, moedaGerencial, dataIso) {
-        var url = String(opcoes.url).replace('{data}', dataIso).replace('{moeda}', moedaEstrangeira);
+        var url = String(opts.url || '')
+          .replace('{data}', encodeURIComponent(dataIso))
+          .replace('{moeda}', encodeURIComponent(moedaEstrangeira))
+          .replace('{moeda_gerencial}', encodeURIComponent(moedaGerencial));
+        if (url.indexOf('https://') !== 0) {
+          return { value: null, reason: 'PROVEDOR_URL_INVALIDA' };
+        }
+        var inicio = opts.relogio && opts.relogio.agoraMs ? opts.relogio.agoraMs() : null;
         var resposta;
         try {
-          resposta = urlFetchApp.fetch(url, { muteHttpExceptions: true });
+          resposta = urlFetchApp.fetch(url, {
+            method: 'get',
+            muteHttpExceptions: true,
+            followRedirects: false,
+            validateHttpsCertificates: true
+          });
         } catch (e) {
-          return { value: null, reason: 'PROVEDOR_INDISPONIVEL:' + e.message };
+          return { value: null, reason: 'PROVEDOR_INDISPONIVEL:' + (e && e.message ? e.message : 'ERRO') };
         }
-        if (resposta.getResponseCode() !== 200) {
-          return { value: null, reason: 'PROVEDOR_HTTP_' + resposta.getResponseCode() };
+        if (inicio !== null && opts.timeoutMs) {
+          var duracao = opts.relogio.agoraMs() - inicio;
+          if (duracao > Number(opts.timeoutMs)) {
+            return { value: null, reason: 'PROVEDOR_TEMPO_EXCEDIDO:' + duracao + 'ms' };
+          }
         }
-        var taxa = opcoes.extrair(resposta.getContentText(), dataIso);
-        if (taxa === null || taxa === undefined || !Number.isFinite(Number(taxa))) {
+        var codigo = resposta.getResponseCode();
+        if (codigo !== 200) {
+          return { value: null, reason: 'PROVEDOR_HTTP_' + codigo };
+        }
+        var taxa;
+        try {
+          taxa = opts.extrair(resposta.getContentText(), dataIso);
+        } catch (e2) {
+          return { value: null, reason: 'PROVEDOR_RESPOSTA_INESPERADA' };
+        }
+        if (taxa === null || taxa === undefined || !Number.isFinite(Number(taxa)) || Number(taxa) <= 0) {
           return { value: null, reason: 'TAXA_NAO_PUBLICADA:' + dataIso };
         }
         return { value: Number(taxa), reason: null };
       }
+    };
+  }
+
+  /**
+   * Provedor configurado a partir da aba 00 (política do usuário).
+   * Política MANUAL é o padrão do V1: nenhuma chamada externa acontece.
+   */
+  function provedorConfigurado(config, configRows, deps) {
+    var politica = String(config.param('POLITICA_TAXA_CAMBIO').value || 'MANUAL').toUpperCase();
+    var cache = provedorCache(configRows);
+    if (politica !== 'HTTP') {
+      return { nome: politica === 'HTTP' ? 'HTTP' : 'MANUAL', primario: cache, externo: null, politica: politica };
+    }
+    var url = config.param('URL_PROVEDOR_TAXA_CAMBIO').value;
+    if (!url || !(deps && deps.urlFetchApp)) {
+      return { nome: 'HTTP_INDISPONIVEL', primario: cache, externo: null, politica: politica };
+    }
+    return {
+      nome: 'HTTP',
+      primario: cache,
+      politica: politica,
+      externo: provedorHttp(deps.urlFetchApp, {
+        url: url,
+        nome: String(config.param('PROVEDOR_TAXA_CAMBIO').value || 'PTAX'),
+        timeoutMs: config.param('TIMEOUT_PROVEDOR_TAXA_MS').value || 15000,
+        relogio: deps.relogio,
+        extrair: deps.extrair || function (texto) {
+          var dados = JSON.parse(texto);
+          return dados && dados.taxa !== undefined ? Number(dados.taxa) : null;
+        }
+      })
     };
   }
 
@@ -73,6 +149,8 @@
   }
 
   FOS.Adapters.provedorManual = provedorManual;
+  FOS.Adapters.provedorCache = provedorCache;
   FOS.Adapters.provedorHttp = provedorHttp;
+  FOS.Adapters.provedorConfigurado = provedorConfigurado;
   FOS.Adapters.resolverTaxa = resolverTaxa;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

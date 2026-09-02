@@ -10,6 +10,10 @@
  *   cabecalhos(nome)          -> Array<string>
  *   anexarLinhas(nome, objs)  -> number (linhas escritas)
  *   substituirTabela(nome, o) -> void  (uso restrito: abas de projeção)
+ *   formatarAba(nome, spec)   -> void  (congelamento, larguras, formatos)
+ *   protegerColunas(nome, c)  -> void  (origem imutável)
+ *   ocultarAba(nome, oculta)  -> void
+ *   notaAba(nome, texto)      -> void
  */
 (function (root) {
   'use strict';
@@ -68,6 +72,95 @@
         });
         sheet.getRange(sheet.getLastRow() + 1, 1, linhas.length, headers.length).setValues(linhas);
         return linhas.length;
+      },
+
+
+      /**
+       * Formatação da aba: congelamento, larguras, formatos numéricos,
+       * filtro e faixa alternada. Puramente cosmético e idempotente — o
+       * domínio nunca depende disto.
+       */
+      formatarAba: function (nome, spec) {
+        var sheet = aba(nome);
+        var s = spec || {};
+        var colunas = this.cabecalhos(nome);
+        if (!colunas.length) return nome;
+        sheet.setFrozenRows(s.congelarLinhas === undefined ? 1 : s.congelarLinhas);
+        if (s.congelarColunas) sheet.setFrozenColumns(s.congelarColunas);
+        (s.larguras || []).forEach(function (largura, i) {
+          if (largura) sheet.setColumnWidth(i + 1, largura);
+        });
+        var ultimaLinha = Math.max(sheet.getMaxRows(), 2);
+        Object.keys(s.formatos || {}).forEach(function (coluna) {
+          var idx = colunas.indexOf(coluna);
+          if (idx === -1) return;
+          sheet.getRange(2, idx + 1, ultimaLinha - 1, 1).setNumberFormat(s.formatos[coluna]);
+        });
+        var cabecalho = sheet.getRange(1, 1, 1, colunas.length);
+        cabecalho.setFontWeight('bold');
+        if (s.corCabecalho) cabecalho.setBackground(s.corCabecalho);
+        if (s.corTexto) cabecalho.setFontColor(s.corTexto);
+        if (s.filtro && sheet.getLastRow() > 1 && !sheet.getFilter()) {
+          sheet.getRange(1, 1, sheet.getLastRow(), colunas.length).createFilter();
+        }
+        return nome;
+      },
+
+      /** Validação por lista fixa em uma coluna (evita digitação livre). */
+      validarColunaPorLista: function (nome, coluna, valores) {
+        var sheet = aba(nome);
+        var idx = this.cabecalhos(nome).indexOf(coluna);
+        if (idx === -1 || !valores || !valores.length) return false;
+        var regra = SpreadsheetApp.newDataValidation()
+          .requireValueInList(valores, true)
+          .setAllowInvalid(false)
+          .build();
+        sheet.getRange(2, idx + 1, Math.max(sheet.getMaxRows() - 1, 1), 1).setDataValidation(regra);
+        return true;
+      },
+
+      /**
+       * Protege colunas de origem contra edição manual, mantendo o dono da
+       * planilha como editor autorizado (manutenção continua possível).
+       */
+      protegerColunas: function (nome, colunasProtegidas, descricao) {
+        var sheet = aba(nome);
+        var colunas = this.cabecalhos(nome);
+        var protecoes = sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE);
+        protecoes.forEach(function (p) {
+          if (p.getDescription() && p.getDescription().indexOf('FinanceOS') === 0) p.remove();
+        });
+        (colunasProtegidas || []).forEach(function (coluna) {
+          var idx = colunas.indexOf(coluna);
+          if (idx === -1) return;
+          var protecao = sheet.getRange(1, idx + 1, sheet.getMaxRows(), 1).protect();
+          protecao.setDescription('FinanceOS: ' + (descricao || 'origem imutável') + ' [' + coluna + ']');
+          protecao.setWarningOnly(true);
+        });
+        return nome;
+      },
+
+      ocultarAba: function (nome, oculta) {
+        var sheet = aba(nome);
+        if (oculta) sheet.hideSheet();
+        else sheet.showSheet();
+        return nome;
+      },
+
+      /** Nota explicativa na célula A1: contexto sem poluir a interface. */
+      notaAba: function (nome, texto) {
+        aba(nome).getRange(1, 1).setNote(texto || '');
+        return nome;
+      },
+
+      ordenarAbas: function (ordem) {
+        (ordem || []).forEach(function (nomeAba, i) {
+          var sheet = spreadsheet.getSheetByName(nomeAba);
+          if (!sheet) return;
+          spreadsheet.setActiveSheet(sheet);
+          spreadsheet.moveActiveSheet(i + 1);
+        });
+        return ordem;
       },
 
       substituirTabela: function (nome, objetos) {

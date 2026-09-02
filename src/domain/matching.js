@@ -63,15 +63,17 @@
           origem: 'MATCH_AUTOMATICO'
         });
       } else if (cands.length === 0) {
-        pendentes.push({ evento_id: evento.evento_id, motivo: 'CONCILIACAO_SEM_CANDIDATO' });
-        itensFila.push(FOS.Queue.novoItem({
-          origem: C.ORIGEM_FILA.CONCILIACAO,
-          referencia: evento.evento_id,
+        // Sem candidato não é ambiguidade: normalmente o extrato do mês do
+        // evento ainda não foi importado. Fica como pendência reportada, não
+        // como item de fila — quem cobra isso é a invariante do fechamento,
+        // que é escopada por competência e não trava os outros meses.
+        pendentes.push({
+          evento_id: evento.evento_id,
           motivo: 'CONCILIACAO_SEM_CANDIDATO',
           detalhe: 'Nenhuma linha com valor ' + expectativa.valor_esperado
-            + ' na conta ' + expectativa.conta_id + ' dentro de ' + janelaDias + ' dias de ' + expectativa.data,
-          agora: agora
-        }));
+            + ' na conta ' + expectativa.conta_id + ' dentro de ' + janelaDias
+            + ' dias de ' + expectativa.data
+        });
       } else {
         pendentes.push({ evento_id: evento.evento_id, motivo: 'AMBIGUIDADE_CONCILIACAO' });
         itensFila.push(FOS.Queue.novoItem({

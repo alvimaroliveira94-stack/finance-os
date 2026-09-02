@@ -380,6 +380,841 @@
       return FOS.ViewModel.construir(snapshot, opts);
     }
 
+
+    /* ---------------------------------------------------------------- */
+    /* Onda 2: fluxos operacionais que fechavam o ciclo pela metade      */
+    /* ---------------------------------------------------------------- */
+
+    /** Competências já fechadas: usadas para proteger período fechado. */
+    function competenciasFechadas() {
+      var fechadas = {};
+      repo.fechamentos().forEach(function (f) {
+        if (String(f.estado) === C.ESTADO_FECHAMENTO.FECHADO) fechadas[String(f.competencia)] = true;
+      });
+      return Object.keys(fechadas).sort();
+    }
+
+    /**
+     * Reclassificação manual de uma linha do ledger.
+     * A origem é imutável (Ledger.reclassificar recusa), a competência
+     * precisa estar aberta e a decisão vem SEMPRE do usuário: não existe
+     * caminho aqui que escolha categoria sozinho.
+     */
+    function reclassificarLinha(params) {
+      var agora = relogio.agora();
+      var referencia = String(params.referencia || '').trim();
+      var categoria = String(params.categoria || '').trim().toUpperCase();
+      if (!referencia) FOS.Core.fail('REFERENCIA_OBRIGATORIA', 'Informe a referência da linha do ledger');
+      if (!C.isValid(C.CATEGORIA, categoria)) {
+        FOS.Core.fail('CATEGORIA_NAO_CANONICA',
+          'Categoria fora do catálogo canônico: ' + params.categoria,
+          { categorias: C.values(C.CATEGORIA) });
+      }
+
+      var correntes = FOS.Ledger.visaoCorrente(repo.ledger());
+      var alvos = correntes.filter(function (l) {
+        return String(l.fingerprint) === referencia
+          || String(l.fingerprint).slice(0, 12) === referencia;
+      });
+      if (!alvos.length) FOS.Core.fail('LINHA_INEXISTENTE', 'Nenhuma linha do ledger com referência ' + referencia);
+      if (alvos.length > 1) FOS.Core.fail('REFERENCIA_AMBIGUA', 'Mais de uma linha com a referência ' + referencia);
+      var atual = alvos[0];
+
+      var competencia = FOS.Dates.competenciaOf(String(atual.data_origem));
+      if (competenciasFechadas().indexOf(competencia) !== -1) {
+        FOS.Core.fail('PERIODO_FECHADO',
+          'A competência ' + competencia + ' já está fechada. Use restatement para corrigi-la.',
+          { competencia: competencia });
+      }
+
+      if (atual.categoria === categoria
+        && String(atual.subcategoria || '') === String(params.subcategoria || '')) {
+        auditoria.registrar({
+          acao: 'RECLASSIFICAR_LINHA',
+          entidade: A.LEDGER,
+          entidade_id: atual.linha_id,
+          antes: { categoria: atual.categoria, subcategoria: atual.subcategoria },
+          depois: { categoria: categoria, subcategoria: params.subcategoria || '' },
+          resultado: 'SEM_MUDANCA',
+          detalhe: 'Reclassificação idempotente: categoria já era essa.'
+        });
+        auditoria.persistir();
+        return { ok: true, alterado: false, linha: atual };
+      }
+
+      var nova = FOS.Ledger.reclassificar(atual, {
+        categoria: categoria,
+        subcategoria: params.subcategoria || '',
+        universo: FOS.Rules.UNIVERSO_POR_CATEGORIA[categoria],
+        regra_id: 'MANUAL',
+        regra_versao: '',
+        confianca: 1
+      }, agora, params.ator || ator, params.motivo || 'RECLASSIFICACAO_MANUAL');
+
+      repo.anexar(A.LEDGER, [nova]);
+      auditoria.registrar({
+        acao: 'RECLASSIFICAR_LINHA',
+        entidade: A.LEDGER,
+        entidade_id: nova.linha_id,
+        antes: {
+          categoria: atual.categoria, subcategoria: atual.subcategoria,
+          universo: atual.universo, versao: atual.versao_gerencial
+        },
+        depois: {
+          categoria: nova.categoria, subcategoria: nova.subcategoria,
+          universo: nova.universo, versao: nova.versao_gerencial
+        },
+        resultado: 'OK',
+        detalhe: { motivo: params.motivo || 'RECLASSIFICACAO_MANUAL', competencia: competencia }
+      });
+      auditoria.persistir();
+      return { ok: true, alterado: true, linha: nova, versao_anterior: atual };
+    }
+
+    /**
+     * Resolve um item da fila de revisão.
+     * Exige escolha explícita do usuário: sem `categoria` (para item de
+     * classificação) ou sem `fingerprint` (para item de conciliação) o
+     * workflow recusa. Nunca deduz a resposta.
+     * Idempotente: item já resolvido devolve SEM_MUDANCA sem escrever nada.
+     */
+    function resolverItemFila(params) {
+      var agora = relogio.agora();
+      var itemId = String(params.item_id || '').trim();
+      var itens = repo.fila();
+      var item = itens.filter(function (i) { return String(i.item_id) === itemId; })[0];
+      if (!item) FOS.Core.fail('ITEM_FILA_INEXISTENTE', 'Item não encontrado na fila: ' + itemId);
+
+      if (String(item.status) !== C.STATUS_FILA.ABERTO) {
+        auditoria.registrar({
+          acao: 'RESOLVER_ITEM_FILA',
+          entidade: A.FILA_REVISAO,
+          entidade_id: itemId,
+          antes: { status: item.status },
+          depois: { status: item.status },
+          resultado: 'SEM_MUDANCA',
+          detalhe: 'Item já estava resolvido.'
+        });
+        auditoria.persistir();
+        return { ok: true, alterado: false, item: item };
+      }
+
+      var decisao = String(params.decisao || '').trim().toUpperCase();
+      if (['CLASSIFICAR', 'CONCILIAR', 'DESCARTAR'].indexOf(decisao) === -1) {
+        FOS.Core.fail('DECISAO_OBRIGATORIA',
+          'Informe a decisão: CLASSIFICAR, CONCILIAR ou DESCARTAR',
+          { item_id: itemId, motivo: item.motivo });
+      }
+
+      var resultadoLedger = null;
+      if (decisao === 'CLASSIFICAR') {
+        if (!params.categoria) {
+          FOS.Core.fail('CATEGORIA_OBRIGATORIA',
+            'Resolver por classificação exige a categoria escolhida pelo usuário',
+            { item_id: itemId, categorias: C.values(C.CATEGORIA) });
+        }
+        // A linha pode nunca ter entrado no ledger (não havia regra que a
+        // classificasse). Nesse caso ela entra agora, como versão 1, com a
+        // categoria que o usuário escolheu.
+        var jaNoLedger = FOS.Ledger.visaoCorrente(repo.ledger()).some(function (l) {
+          return String(l.fingerprint) === String(item.referencia);
+        });
+        resultadoLedger = jaNoLedger
+          ? reclassificarLinha({
+            referencia: item.referencia,
+            categoria: params.categoria,
+            subcategoria: params.subcategoria,
+            motivo: 'RESOLUCAO_FILA:' + itemId,
+            ator: params.ator
+          })
+          : classificarPendente({
+            fingerprint: item.referencia,
+            categoria: params.categoria,
+            subcategoria: params.subcategoria,
+            motivo: 'RESOLUCAO_FILA:' + itemId,
+            ator: params.ator
+          });
+      } else if (decisao === 'CONCILIAR') {
+        if (!params.fingerprint) {
+          FOS.Core.fail('FINGERPRINT_OBRIGATORIO',
+            'Resolver conciliação exige a linha escolhida pelo usuário',
+            { item_id: itemId, candidatos: item.candidatos });
+        }
+        resultadoLedger = conciliarManualmente({
+          evento_id: item.referencia,
+          fingerprint: params.fingerprint,
+          motivo: 'RESOLUCAO_FILA:' + itemId,
+          ator: params.ator
+        });
+      }
+
+      var resolvido = FOS.Queue.resolver(
+        item,
+        decisao + (params.categoria ? ':' + params.categoria : '')
+          + (params.fingerprint ? ':' + String(params.fingerprint).slice(0, 12) : ''),
+        agora,
+        params.ator || 'USUARIO'
+      );
+      // A fila é uma projeção de trabalho pendente: reescrevê-la inteira
+      // mantém um item por linha, sem duplicar histórico (que vive na aba 90).
+      repo.substituir(A.FILA_REVISAO, itens.map(function (i) {
+        return String(i.item_id) === itemId ? resolvido : i;
+      }));
+
+      auditoria.registrar({
+        acao: 'RESOLVER_ITEM_FILA',
+        entidade: A.FILA_REVISAO,
+        entidade_id: itemId,
+        antes: { status: item.status, motivo: item.motivo, referencia: item.referencia },
+        depois: { status: resolvido.status, resolucao: resolvido.resolucao },
+        resultado: 'OK',
+        detalhe: {
+          decisao: decisao,
+          ledger_alterado: resultadoLedger ? resultadoLedger.alterado : false
+        }
+      });
+      auditoria.persistir();
+      return { ok: true, alterado: true, item: resolvido, ledger: resultadoLedger };
+    }
+
+    /**
+     * Classifica uma linha que está no staging (aba 10) e ainda não entrou no
+     * ledger, porque nenhuma regra a cobria. A categoria vem do usuário.
+     */
+    function classificarPendente(params) {
+      var agora = relogio.agora();
+      var categoria = String(params.categoria || '').trim().toUpperCase();
+      if (!C.isValid(C.CATEGORIA, categoria)) {
+        FOS.Core.fail('CATEGORIA_NAO_CANONICA',
+          'Categoria fora do catálogo canônico: ' + params.categoria,
+          { categorias: C.values(C.CATEGORIA) });
+      }
+      var staging = repo.staging().filter(function (l) {
+        return String(l.fingerprint) === String(params.fingerprint);
+      })[0];
+      if (!staging) {
+        FOS.Core.fail('LINHA_INEXISTENTE',
+          'Nenhuma linha em staging com fingerprint ' + params.fingerprint);
+      }
+      var competencia = FOS.Dates.competenciaOf(String(staging.data));
+      if (competenciasFechadas().indexOf(competencia) !== -1) {
+        FOS.Core.fail('PERIODO_FECHADO', 'Competência já fechada: ' + competencia);
+      }
+
+      var nova = FOS.Ledger.novaLinha(staging, {
+        categoria: categoria,
+        subcategoria: params.subcategoria || '',
+        universo: FOS.Rules.UNIVERSO_POR_CATEGORIA[categoria],
+        regra_id: 'MANUAL',
+        regra_versao: '',
+        confianca: 1
+      }, agora, params.ator || 'USUARIO');
+      nova.motivo_versao = params.motivo || 'CLASSIFICACAO_MANUAL';
+
+      repo.anexar(A.LEDGER, [nova]);
+      auditoria.registrar({
+        acao: 'CLASSIFICAR_PENDENTE',
+        entidade: A.LEDGER,
+        entidade_id: nova.linha_id,
+        antes: { categoria: null, origem: 'STAGING', fingerprint: staging.fingerprint },
+        depois: { categoria: nova.categoria, universo: nova.universo, versao: 1 },
+        resultado: 'OK',
+        detalhe: { motivo: params.motivo || 'CLASSIFICACAO_MANUAL', competencia: competencia }
+      });
+      return { ok: true, alterado: true, linha: nova };
+    }
+
+    /** Conciliação escolhida à mão (sai da fila de ambiguidade). */
+    function conciliarManualmente(params) {
+      var agora = relogio.agora();
+      var eventos = repo.eventos();
+      var evento = eventos.filter(function (e) { return String(e.evento_id) === String(params.evento_id); })[0];
+      if (!evento) FOS.Core.fail('EVENTO_INEXISTENTE', 'Evento não encontrado: ' + params.evento_id);
+
+      var correntes = FOS.Ledger.visaoCorrente(repo.ledger());
+      var alvos = correntes.filter(function (l) {
+        return String(l.fingerprint) === String(params.fingerprint)
+          || String(l.fingerprint).slice(0, 12) === String(params.fingerprint);
+      });
+      if (!alvos.length) FOS.Core.fail('LINHA_INEXISTENTE', 'Linha não encontrada: ' + params.fingerprint);
+      var atual = alvos[0];
+
+      if (String(atual.evento_conciliado_id || '') === String(evento.evento_id)) {
+        return { ok: true, alterado: false, linha: atual };
+      }
+      if (atual.evento_conciliado_id) {
+        FOS.Core.fail('LINHA_JA_CONCILIADA',
+          'Linha já conciliada com o evento ' + atual.evento_conciliado_id);
+      }
+      var competencia = FOS.Dates.competenciaOf(String(atual.data_origem));
+      if (competenciasFechadas().indexOf(competencia) !== -1) {
+        FOS.Core.fail('PERIODO_FECHADO', 'Competência já fechada: ' + competencia);
+      }
+
+      var expectativa = FOS.Events.expectativaConciliacao(evento);
+      var alteracoes = { evento_conciliado_id: evento.evento_id };
+      if (expectativa && expectativa.categoria_esperada && atual.categoria !== expectativa.categoria_esperada) {
+        alteracoes.categoria = expectativa.categoria_esperada;
+        alteracoes.universo = FOS.Rules.UNIVERSO_POR_CATEGORIA[expectativa.categoria_esperada];
+      }
+      var nova = FOS.Ledger.reclassificar(atual, alteracoes, agora,
+        params.ator || ator, params.motivo || 'CONCILIACAO_MANUAL');
+      repo.anexar(A.LEDGER, [nova]);
+      auditoria.registrar({
+        acao: 'CONCILIAR_MANUALMENTE',
+        entidade: A.LEDGER,
+        entidade_id: nova.linha_id,
+        antes: { evento_conciliado_id: atual.evento_conciliado_id || '', categoria: atual.categoria },
+        depois: { evento_conciliado_id: nova.evento_conciliado_id, categoria: nova.categoria },
+        resultado: 'OK',
+        detalhe: { evento_id: evento.evento_id, motivo: params.motivo || 'CONCILIACAO_MANUAL' }
+      });
+      return { ok: true, alterado: true, linha: nova };
+    }
+
+    /**
+     * Materializa eventos declarativos nos subledgers.
+     *  NOVA_OBRIGACAO  -> nova versão em 30_PROVISOES
+     *  NOVO_OBJETIVO   -> nova versão em 31_OBJETIVOS
+     *  APORTE_POSICAO  -> evento APORTE em 32_LEDGER_POSICOES
+     *  RETIRADA_POSICAO-> evento RETIRADA em 32_LEDGER_POSICOES
+     * Idempotente: cada evento manual materializa no máximo uma vez, e a
+     * origem do registro fica gravada em origem_evento_id / evento_id.
+     */
+    function materializarEventos() {
+      var agora = relogio.agora();
+      var config = repo.config();
+      var eventos = repo.eventos();
+      var provisoesLinhas = repo.provisoes();
+      var objetivosLinhas = repo.objetivos();
+      var posicoesLinhas = repo.posicoes();
+
+      var provisoesNovas = [];
+      var objetivosNovos = [];
+      var posicoesNovas = [];
+      var ignorados = [];
+      var invalidos = [];
+
+      function jaMaterializado(linhas, campo, eventoId) {
+        return (linhas || []).some(function (l) { return String(l[campo] || '') === String(eventoId); });
+      }
+
+      FOS.Core.sortBy(eventos, [
+        function (e) { return String(e.data); },
+        function (e) { return String(e.evento_id); }
+      ]).forEach(function (evento) {
+        var tipo = String(evento.tipo_evento || '').toUpperCase();
+        if (String(evento.status || '') === FOS.Events.STATUS_EVENTO.CANCELADO) return;
+        if ([C.TIPO_EVENTO.NOVA_OBRIGACAO, C.TIPO_EVENTO.NOVO_OBJETIVO,
+          C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO].indexOf(tipo) === -1) return;
+
+        var validacao = FOS.Events.validar(evento, config);
+        if (!validacao.ok) {
+          invalidos.push({ evento_id: evento.evento_id, erros: validacao.erros });
+          return;
+        }
+        var valor = FOS.Normalize.valor(evento.valor);
+        var referencia = String(evento.referencia_id).trim();
+
+        if (tipo === C.TIPO_EVENTO.NOVA_OBRIGACAO) {
+          if (jaMaterializado(provisoesLinhas.concat(provisoesNovas), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var provisaoAtual = FOS.Subledger.correntes(
+            provisoesLinhas.concat(provisoesNovas), 'provisao_id'
+          ).filter(function (p) { return String(p.provisao_id) === referencia; })[0];
+          var novaProvisao = provisaoAtual
+            ? FOS.Subledger.novaVersao(provisaoAtual, {
+              valor_alvo: valor,
+              vencimento: evento.data,
+              origem_evento_id: evento.evento_id
+            }, agora, 'NOVA_OBRIGACAO:' + evento.evento_id)
+            : {
+              provisao_id: referencia,
+              versao: 1,
+              nome: evento.descricao || referencia,
+              valor_alvo: valor,
+              valor_acumulado: 0,
+              vencimento: evento.data,
+              prioridade: FOS.Config.parseNumber(evento.observacao) || 5,
+              moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
+              origem_evento_id: evento.evento_id,
+              vigente_desde: String(evento.data),
+              vigente_ate: '',
+              criado_em: agora,
+              motivo_versao: 'CRIADA_POR_EVENTO:' + evento.evento_id,
+              observacao: ''
+            };
+          provisoesNovas.push(novaProvisao);
+          return;
+        }
+
+        if (tipo === C.TIPO_EVENTO.NOVO_OBJETIVO) {
+          if (jaMaterializado(objetivosLinhas.concat(objetivosNovos), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var objetivoAtual = FOS.Subledger.correntes(
+            objetivosLinhas.concat(objetivosNovos), 'objetivo_id'
+          ).filter(function (o) { return String(o.objetivo_id) === referencia; })[0];
+          var novoObjetivo = objetivoAtual
+            ? FOS.Subledger.novaVersao(objetivoAtual, {
+              valor_alvo: valor,
+              prazo: evento.data,
+              origem_evento_id: evento.evento_id
+            }, agora, 'NOVO_OBJETIVO:' + evento.evento_id)
+            : {
+              objetivo_id: referencia,
+              versao: 1,
+              nome: evento.descricao || referencia,
+              valor_alvo: valor,
+              valor_acumulado: 0,
+              prazo: evento.data,
+              prioridade: 5,
+              moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
+              origem_evento_id: evento.evento_id,
+              vigente_desde: String(evento.data),
+              vigente_ate: '',
+              criado_em: agora,
+              motivo_versao: 'CRIADO_POR_EVENTO:' + evento.evento_id,
+              observacao: ''
+            };
+          objetivosNovos.push(novoObjetivo);
+          return;
+        }
+
+        // APORTE_POSICAO / RETIRADA_POSICAO
+        var eventoIdPosicao = 'PE-' + FOS.Hash.hashParts([evento.evento_id, tipo]).slice(0, 12);
+        if (jaMaterializado(posicoesLinhas.concat(posicoesNovas), 'origem', evento.evento_id)
+          || jaMaterializado(posicoesLinhas.concat(posicoesNovas), 'evento_id', eventoIdPosicao)) {
+          ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+          return;
+        }
+        posicoesNovas.push({
+          evento_id: eventoIdPosicao,
+          posicao_id: referencia,
+          tipo_evento: tipo === C.TIPO_EVENTO.APORTE_POSICAO
+            ? C.EVENTO_POSICAO.APORTE : C.EVENTO_POSICAO.RETIRADA,
+          data: evento.data,
+          valor: valor,
+          moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
+          quantidade: '',
+          compensa_evento_id: '',
+          origem: evento.evento_id,
+          criado_em: agora,
+          observacao: evento.descricao || ''
+        });
+      });
+
+      repo.anexar(A.PROVISOES, provisoesNovas);
+      repo.anexar(A.OBJETIVOS, objetivosNovos);
+      repo.anexar(A.POSICOES, posicoesNovas);
+
+      if (provisoesNovas.length || objetivosNovos.length || posicoesNovas.length || invalidos.length) {
+        auditoria.registrar({
+          acao: 'MATERIALIZAR_EVENTOS',
+          entidade: 'SUBLEDGERS',
+          entidade_id: '',
+          antes: {
+            provisoes: provisoesLinhas.length,
+            objetivos: objetivosLinhas.length,
+            posicoes: posicoesLinhas.length
+          },
+          depois: {
+            provisoes: provisoesLinhas.length + provisoesNovas.length,
+            objetivos: objetivosLinhas.length + objetivosNovos.length,
+            posicoes: posicoesLinhas.length + posicoesNovas.length
+          },
+          resultado: invalidos.length ? 'PARCIAL' : 'OK',
+          detalhe: { ignorados: ignorados, invalidos: invalidos }
+        });
+        auditoria.persistir();
+      }
+
+      return {
+        provisoes: provisoesNovas,
+        objetivos: objetivosNovos,
+        posicoes: posicoesNovas,
+        ignorados: ignorados,
+        invalidos: invalidos
+      };
+    }
+
+    /**
+     * Registro manual de evento de posição.
+     * Cobre DISTRIBUICAO e SNAPSHOT_VALOR_MERCADO, que não vêm de evento
+     * declarativo. Append-only: correção é sempre evento compensatório.
+     */
+    function registrarEventoPosicao(params) {
+      var agora = relogio.agora();
+      var existentes = repo.posicoes();
+      var evento = {
+        evento_id: String(params.evento_id || ('PM-' + FOS.Hash.hashParts([
+          params.posicao_id, params.tipo_evento, params.data, params.valor
+        ]).slice(0, 12))),
+        posicao_id: String(params.posicao_id || ''),
+        tipo_evento: String(params.tipo_evento || '').toUpperCase(),
+        data: String(params.data || ''),
+        valor: FOS.Normalize.valor(params.valor),
+        moeda: String(params.moeda || C.MOEDA.BRL).toUpperCase(),
+        quantidade: params.quantidade === undefined || params.quantidade === null ? '' : params.quantidade,
+        compensa_evento_id: String(params.compensa_evento_id || ''),
+        origem: params.origem || 'MANUAL',
+        criado_em: agora,
+        observacao: params.observacao || ''
+      };
+
+      if (existentes.some(function (e) { return String(e.evento_id) === evento.evento_id; })) {
+        auditoria.registrar({
+          acao: 'REGISTRAR_EVENTO_POSICAO',
+          entidade: A.POSICOES,
+          entidade_id: evento.evento_id,
+          antes: { eventos: existentes.length },
+          depois: { eventos: existentes.length },
+          resultado: 'SEM_MUDANCA',
+          detalhe: 'Evento de posição já registrado.'
+        });
+        auditoria.persistir();
+        return { ok: true, alterado: false, evento: evento };
+      }
+
+      var validacao = FOS.Positions.validarEvento(evento, existentes);
+      if (!validacao.ok) {
+        auditoria.registrar({
+          acao: 'REGISTRAR_EVENTO_POSICAO',
+          entidade: A.POSICOES,
+          entidade_id: evento.evento_id,
+          antes: { eventos: existentes.length },
+          depois: { eventos: existentes.length },
+          resultado: 'REJEITADO',
+          detalhe: { erros: validacao.erros }
+        });
+        auditoria.persistir();
+        return { ok: false, alterado: false, erros: validacao.erros };
+      }
+
+      repo.anexar(A.POSICOES, [evento]);
+      auditoria.registrar({
+        acao: 'REGISTRAR_EVENTO_POSICAO',
+        entidade: A.POSICOES,
+        entidade_id: evento.evento_id,
+        antes: { eventos: existentes.length },
+        depois: { eventos: existentes.length + 1, tipo: evento.tipo_evento, valor: evento.valor },
+        resultado: 'OK',
+        detalhe: { posicao_id: evento.posicao_id, compensa: evento.compensa_evento_id || null }
+      });
+      auditoria.persistir();
+      return { ok: true, alterado: true, evento: evento };
+    }
+
+    /** Correção de evento de posição: só por evento compensatório. */
+    function compensarEventoPosicao(params) {
+      var existentes = repo.posicoes();
+      var original = existentes.filter(function (e) {
+        return String(e.evento_id) === String(params.evento_id);
+      })[0];
+      if (!original) FOS.Core.fail('EVENTO_POSICAO_INEXISTENTE', 'Evento não encontrado: ' + params.evento_id);
+      if (!params.motivo) FOS.Core.fail('MOTIVO_OBRIGATORIO', 'Compensação exige motivo explícito');
+
+      var tipo = String(original.tipo_evento).toUpperCase();
+      if (tipo === C.EVENTO_POSICAO.SNAPSHOT_VALOR_MERCADO) {
+        if (params.valor === undefined || params.valor === null) {
+          FOS.Core.fail('VALOR_OBRIGATORIO', 'Corrigir snapshot exige o novo valor de mercado');
+        }
+        return registrarEventoPosicao({
+          posicao_id: original.posicao_id,
+          tipo_evento: C.EVENTO_POSICAO.SNAPSHOT_VALOR_MERCADO,
+          data: params.data || original.data,
+          valor: params.valor,
+          moeda: original.moeda,
+          compensa_evento_id: original.evento_id,
+          origem: 'COMPENSACAO',
+          observacao: params.motivo
+        });
+      }
+      var compensatorio = FOS.Positions.eventoCompensatorio(
+        original,
+        'PC-' + FOS.Hash.hashParts([original.evento_id, 'COMPENSA']).slice(0, 12),
+        relogio.agora(),
+        params.motivo
+      );
+      return registrarEventoPosicao(compensatorio);
+    }
+
+    /**
+     * Diagnóstico de setup: o que exatamente impede o primeiro fechamento.
+     * Não corrige nada — explica.
+     */
+    function diagnosticoSetup(competencia) {
+      var config = repo.config();
+      var bloqueios = [];
+      var avisos = [];
+
+      var parametrosCriticos = [
+        { chave: FOS.Life.PARAM_SALDO_INICIAL, porque: 'Sem saldo inicial não há caixa de vida, disponível nem runway.' },
+        { chave: FOS.Life.PARAM_COMPETENCIA_INICIAL, porque: 'Define a partir de quando o ledger conta para o caixa.' },
+        { chave: 'MOEDA_GERENCIAL', porque: 'Define a moeda de consolidação do patrimônio.' },
+        { chave: FOS.State.PARAM_RUNWAY_ESTABILIZANDO, porque: 'Sem limiar não há estado do ciclo.' },
+        { chave: FOS.State.PARAM_RUNWAY_ESTAVEL, porque: 'Sem limiar não há estado do ciclo.' },
+        { chave: FOS.State.PARAM_RUNWAY_EXPANSAO, porque: 'Sem limiar não há estado do ciclo.' },
+        { chave: FOS.Signals.PARAM_LIMITE_GASTO_EXTRA, porque: 'Sem limite não há sinal de gasto extraordinário anormal.' },
+        { chave: FOS.Signals.PARAM_QUEDA_RUNWAY, porque: 'Sem percentual não há sinal de queda de runway.' },
+        { chave: FOS.Signals.PARAM_MES_FORTE, porque: 'Sem percentual não há leitura de mês forte.' }
+      ];
+      parametrosCriticos.forEach(function (p) {
+        var valor = config.param(p.chave);
+        if (valor.value === null) {
+          bloqueios.push({
+            codigo: 'PARAMETRO_INDISPONIVEL',
+            chave: p.chave,
+            status: valor.status,
+            reason: valor.reason,
+            impacto: p.porque
+          });
+        }
+      });
+
+      Object.keys(config.parametros).forEach(function (chave) {
+        var p = config.parametros[chave];
+        if (p.status === 'BLOQUEADO' && !parametrosCriticos.some(function (c) { return c.chave === chave; })) {
+          avisos.push({
+            codigo: 'PARAMETRO_BLOQUEADO',
+            chave: chave,
+            reason: p.reason,
+            impacto: 'Não impede o fechamento; os cálculos que dependem dele ficam null com motivo.'
+          });
+        }
+      });
+
+      var contas = Object.keys(config.contas).map(function (k) { return config.contas[k]; });
+      if (!contas.filter(function (c) { return FOS.Accounts.elegibilidadeImportacao(c).elegivel; }).length) {
+        bloqueios.push({
+          codigo: 'SEM_CONTA_ELEGIVEL',
+          chave: 'CONTA',
+          impacto: 'Nenhuma conta de vida ativa e elegível: não há como importar extrato.'
+        });
+      }
+      if (!contas.filter(function (c) { return c.universo === C.UNIVERSO.TRADING && c.ativa; }).length) {
+        avisos.push({
+          codigo: 'SEM_CONTA_TRADING',
+          chave: 'CONTA',
+          impacto: 'Sem conta de trading ativa as métricas de trading ficam indisponíveis.'
+        });
+      }
+      if (!repo.regras().length) {
+        bloqueios.push({
+          codigo: 'SEM_REGRAS_CLASSIFICACAO',
+          chave: A.REGRAS,
+          impacto: 'Sem regra nenhuma linha é classificada: tudo cairia na fila de revisão.'
+        });
+      }
+
+      var validacao = null;
+      if (competencia) {
+        try {
+          validacao = FOS.Closing.validar(montarContexto(competencia));
+          validacao.violacoes.forEach(function (v) {
+            bloqueios.push({
+              codigo: v.codigo,
+              chave: competencia,
+              reason: v.detalhe,
+              impacto: 'Invariante do fechamento não satisfeita.'
+            });
+          });
+        } catch (e) {
+          bloqueios.push({
+            codigo: e.code || 'ERRO_DE_VALIDACAO',
+            chave: competencia,
+            reason: e.message,
+            impacto: 'Não foi possível avaliar a competência.'
+          });
+        }
+      }
+
+      return {
+        pronto: bloqueios.length === 0,
+        competencia: competencia || null,
+        bloqueios: bloqueios,
+        avisos: avisos,
+        validacao: validacao
+      };
+    }
+
+    /**
+     * Atualiza (ou cria) o cache de taxas na aba 00.
+     * Com política MANUAL nada é consultado: apenas relata o que falta.
+     * Nenhuma taxa é inventada em nenhuma hipótese.
+     */
+    function atualizarCacheTaxas(params) {
+      var p = params || {};
+      var agora = relogio.agora();
+      var config = repo.config();
+      var configRows = repo.configLinhas();
+      var moedaGerencial = config.param('MOEDA_GERENCIAL').value || C.MOEDA.BRL;
+      var moedaEstrangeira = p.moeda || C.MOEDA.GBP;
+      var datas = p.datas || [];
+      var provedor = FOS.Adapters.provedorConfigurado(config, configRows, {
+        urlFetchApp: deps.urlFetchApp,
+        relogio: relogio,
+        extrair: deps.extrairTaxa
+      });
+
+      var novas = [];
+      var faltando = [];
+      datas.forEach(function (data) {
+        var doCache = FOS.Adapters.resolverTaxa(provedor.primario, moedaEstrangeira, moedaGerencial, data);
+        if (doCache.value !== null) return;
+        if (!provedor.externo) {
+          faltando.push({ data: data, reason: 'POLITICA_' + provedor.politica + '_SEM_PROVEDOR_EXTERNO' });
+          return;
+        }
+        var externo = provedor.externo.obter(moedaEstrangeira, moedaGerencial, data);
+        novas.push(FOS.Fx.linhaDeCache(moedaEstrangeira, moedaGerencial, data,
+          externo.value, provedor.externo.nome, agora, externo.reason));
+        if (externo.value === null) faltando.push({ data: data, reason: externo.reason });
+      });
+
+      if (novas.length) repo.anexar(A.CONFIG, novas);
+      auditoria.registrar({
+        acao: 'ATUALIZAR_CACHE_TAXAS',
+        entidade: A.CONFIG,
+        entidade_id: FOS.Fx.SECAO_TAXA,
+        antes: { linhas_taxa: configRows.filter(function (r) { return r.secao === FOS.Fx.SECAO_TAXA; }).length },
+        depois: { linhas_taxa: configRows.filter(function (r) { return r.secao === FOS.Fx.SECAO_TAXA; }).length + novas.length },
+        resultado: faltando.length ? 'PARCIAL' : 'OK',
+        detalhe: { politica: provedor.politica, datas: datas, faltando: faltando }
+      });
+      auditoria.persistir();
+      return { politica: provedor.politica, gravadas: novas.length, faltando: faltando };
+    }
+
+    /**
+     * Payload completo do painel de leitura (dashboard e abas visíveis).
+     * Tudo que sai daqui passou pela allowlist do view-model.
+     */
+    function painel(competencia, opcoes) {
+      var opts = opcoes || {};
+      var fechamentos = repo.fechamentos();
+      var fechados = fechamentos.filter(function (f) {
+        return String(f.estado) === C.ESTADO_FECHAMENTO.FECHADO;
+      });
+      var alvo = competencia
+        || (fechados.length
+          ? FOS.Core.sortBy(fechados, [function (f) { return String(f.competencia); }])[fechados.length - 1].competencia
+          : null);
+
+      var vigente = alvo ? FOS.Restatement.versaoVigente(fechamentos, alvo) : null;
+      var snapshot = null;
+      var erro = null;
+      if (vigente) {
+        try {
+          snapshot = JSON.parse(vigente.snapshot_json);
+        } catch (e) {
+          erro = 'SNAPSHOT_ILEGIVEL';
+        }
+      }
+
+      var restatements = repo.restatements();
+      var porCompetencia = {};
+      restatements.forEach(function (r) { porCompetencia[String(r.competencia)] = true; });
+
+      var historico = FOS.Core.sortBy(fechados, [
+        function (f) { return String(f.competencia); },
+        function (f) { return Number(f.versao); }
+      ]).map(function (f) {
+        return {
+          competencia: f.competencia,
+          versao: Number(f.versao),
+          estado: f.estado,
+          qualidade: f.qualidade,
+          fechado_em: f.fechado_em,
+          moeda_gerencial: C.MOEDA.BRL,
+          caixa_vida_brl: f.caixa_vida_brl === '' ? null : f.caixa_vida_brl,
+          disponivel_brl: f.disponivel_brl === '' ? null : f.disponivel_brl,
+          runway_meses: f.runway_meses === '' ? null : f.runway_meses,
+          patrimonio_brl_gerencial: f.patrimonio_brl_gerencial === '' ? null : f.patrimonio_brl_gerencial,
+          estado_ciclo_formal: f.estado_ciclo_formal,
+          estado_ciclo_sugerido: f.estado_ciclo_sugerido,
+          restatement: Number(f.versao) > 1,
+          motivo_versao: f.motivo_versao,
+          checksum_curto: String(f.checksum || '').slice(0, 8)
+        };
+      });
+
+      var bloqueios = [];
+      if (opts.incluirBloqueios !== false && alvo) {
+        try {
+          bloqueios = diagnosticoSetup(vigente ? null : alvo).bloqueios;
+        } catch (e) {
+          bloqueios = [{ codigo: 'DIAGNOSTICO_INDISPONIVEL', detalhe: e.message }];
+        }
+      }
+
+      var maxIdade = repo.config().param('MAX_IDADE_VIEWMODEL_DIAS').value;
+      return FOS.ViewModel.construirPainel({
+        snapshot: snapshot,
+        erro: erro,
+        agora: opts.agora || relogio.hoje(),
+        maxIdadeDias: opts.maxIdadeDias === undefined
+          ? (maxIdade === null ? undefined : Number(maxIdade))
+          : opts.maxIdadeDias,
+        historico: historico,
+        restatements: restatements,
+        bloqueios: bloqueios.map(function (b) {
+          return { codigo: b.codigo, detalhe: b.impacto || b.reason || b.detalhe || null };
+        })
+      });
+    }
+
+    /**
+     * Regenera as quatro abas visíveis a partir do modelo canônico.
+     * Idempotente e destrutivo apenas na projeção: as abas visíveis podem
+     * ser apagadas sem perda, porque a verdade está nas abas internas.
+     */
+    function atualizarSuperficies(competencia, opcoes) {
+      var opts = opcoes || {};
+      var dadosPainel = painel(competencia, opts);
+      var fechadas = competenciasFechadas();
+
+      var linhas = {
+        HOME: FOS.Surfaces.home(dadosPainel),
+        MOVIMENTACOES: FOS.Surfaces.movimentacoes({
+          linhas: repo.ledger(),
+          competenciasFechadas: fechadas
+        }),
+        PLANEJAMENTO: FOS.Surfaces.planejamento(dadosPainel),
+        PATRIMONIO: FOS.Surfaces.patrimonio(dadosPainel)
+      };
+
+      repo.substituir(C.ABAS_VISIVEIS.HOME, linhas.HOME);
+      repo.substituir(C.ABAS_VISIVEIS.MOVIMENTACOES, linhas.MOVIMENTACOES);
+      repo.substituir(C.ABAS_VISIVEIS.PLANEJAMENTO, linhas.PLANEJAMENTO);
+      repo.substituir(C.ABAS_VISIVEIS.PATRIMONIO, linhas.PATRIMONIO);
+
+      if (opts.formatar !== false && repo.planilha.formatarAba) {
+        FOS.App.Bootstrap.formatarSuperficies(repo.planilha);
+      }
+
+      auditoria.registrar({
+        acao: 'ATUALIZAR_SUPERFICIES',
+        entidade: 'ABAS_VISIVEIS',
+        entidade_id: dadosPainel.atual.dados ? dadosPainel.atual.dados.competencia : '',
+        antes: null,
+        depois: {
+          home: linhas.HOME.length,
+          movimentacoes: linhas.MOVIMENTACOES.length,
+          planejamento: linhas.PLANEJAMENTO.length,
+          patrimonio: linhas.PATRIMONIO.length,
+          status: dadosPainel.atual.status
+        },
+        resultado: 'OK',
+        detalhe: { competencia: competencia || 'ULTIMO_FECHAMENTO' }
+      });
+      auditoria.persistir();
+      return { painel: dadosPainel, linhas: linhas };
+    }
+
     return {
       auditoria: auditoria,
       importarExtrato: importarExtrato,
@@ -390,7 +1225,20 @@
       viewModel: viewModel,
       montarContexto: montarContexto,
       historico: historico,
-      classificarLinhas: classificarLinhas
+      classificarLinhas: classificarLinhas,
+      // Onda 2
+      competenciasFechadas: competenciasFechadas,
+      reclassificarLinha: reclassificarLinha,
+      classificarPendente: classificarPendente,
+      resolverItemFila: resolverItemFila,
+      conciliarManualmente: conciliarManualmente,
+      materializarEventos: materializarEventos,
+      registrarEventoPosicao: registrarEventoPosicao,
+      compensarEventoPosicao: compensarEventoPosicao,
+      diagnosticoSetup: diagnosticoSetup,
+      atualizarCacheTaxas: atualizarCacheTaxas,
+      painel: painel,
+      atualizarSuperficies: atualizarSuperficies
     };
   }
 

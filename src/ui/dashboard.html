@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>Finance OS</title>
+<style>
+/* Sistema visual editorial financeiro. Light-only no V1.
+   Tokens canônicos: não introduzir cor fora desta lista. */
+:root{
+  --bg:#FAF7F2;
+  --surface:#FFFFFF;
+  --texto:#2B2620;
+  --secundario:#6B6459;
+  --borda:#E4DED3;
+  --positivo:#2F6B4F;
+  --atencao:#B8791A;
+  --risco:#A63A2E;
+  --neutro:#5B6B7A;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --passo:8px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--texto);
+  font-family:var(--sans);font-size:15px;line-height:1.55;
+}
+.pular{
+  position:absolute;left:-9999px;top:0;background:var(--surface);color:var(--texto);
+  padding:12px 16px;border:1px solid var(--texto);z-index:10;
+}
+.pular:focus{left:16px;top:16px}
+a{color:var(--texto)}
+:focus-visible{outline:2px solid var(--texto);outline-offset:3px}
+
+.topo{
+  position:sticky;top:0;z-index:5;background:var(--bg);
+  border-bottom:1px solid var(--borda);
+}
+.topo-interno{
+  max-width:960px;margin:0 auto;padding:16px 24px;
+  display:flex;flex-wrap:wrap;gap:16px;align-items:baseline;justify-content:space-between;
+}
+.marca{font-family:var(--serif);font-size:19px;letter-spacing:.01em}
+.marca span{color:var(--secundario);font-size:13px;font-family:var(--sans);margin-left:10px}
+.nav-secoes{display:flex;flex-wrap:wrap;gap:20px;font-size:13px}
+.nav-secoes a{color:var(--secundario);text-decoration:none;padding:4px 0;border-bottom:1px solid transparent}
+.nav-secoes a:hover,.nav-secoes a:focus-visible{color:var(--texto);border-bottom-color:var(--texto)}
+
+main{max-width:960px;margin:0 auto;padding:32px 24px 72px}
+section{margin:0 0 56px}
+section:last-child{margin-bottom:0}
+h1{font-family:var(--serif);font-size:30px;font-weight:600;margin:0 0 4px;letter-spacing:-.01em}
+h2{
+  font-family:var(--serif);font-size:21px;font-weight:600;margin:0 0 20px;
+  padding-bottom:10px;border-bottom:1px solid var(--borda);
+}
+h3{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--secundario);margin:32px 0 12px}
+p{margin:0 0 12px}
+.legenda{color:var(--secundario);font-size:13px;margin:0 0 24px}
+.nota{color:var(--secundario);font-size:12px;margin-top:10px}
+
+.cartao{background:var(--surface);border:1px solid var(--borda);padding:20px 22px}
+.grade{display:grid;gap:1px;background:var(--borda);border:1px solid var(--borda)}
+.grade-4{grid-template-columns:repeat(4,1fr)}
+.grade-3{grid-template-columns:repeat(3,1fr)}
+.grade-2{grid-template-columns:repeat(2,1fr)}
+.celula{background:var(--surface);padding:18px 20px}
+.rotulo{font-size:12px;color:var(--secundario);letter-spacing:.04em;margin-bottom:8px}
+.numero{
+  font-size:26px;font-weight:600;letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+}
+.numero .moeda{font-size:12px;font-weight:500;color:var(--secundario);margin-right:6px;letter-spacing:.06em}
+.numero.vazio{color:var(--secundario);font-weight:400}
+.motivo{font-size:12px;color:var(--secundario);margin-top:6px;word-break:break-word}
+
+.selo{
+  display:inline-block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  padding:3px 8px;border:1px solid var(--borda);color:var(--secundario);background:var(--surface);
+}
+.selo-positivo{color:var(--positivo);border-color:var(--positivo)}
+.selo-atencao{color:var(--texto);border-color:var(--atencao)}
+.selo-risco{color:var(--risco);border-color:var(--risco)}
+.selo-neutro{color:var(--neutro);border-color:var(--neutro)}
+
+.faixa{border:1px solid var(--borda);border-left:3px solid var(--neutro);background:var(--surface);padding:14px 18px;margin:0 0 24px}
+.faixa-atencao{border-left-color:var(--atencao)}
+.faixa-risco{border-left-color:var(--risco)}
+.faixa strong{display:block;margin-bottom:2px}
+.faixa span{color:var(--secundario);font-size:13px}
+
+table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--borda)}
+caption{text-align:left;color:var(--secundario);font-size:12px;padding:0 0 8px}
+th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--borda);vertical-align:top}
+th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--secundario);font-weight:600}
+tbody tr:last-child td{border-bottom:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;white-space:nowrap}
+.tabela-rolagem{overflow-x:auto}
+
+.lista-acoes{margin:0;padding:0;list-style:none;counter-reset:acao}
+.lista-acoes li{
+  counter-increment:acao;background:var(--surface);border:1px solid var(--borda);
+  padding:16px 18px 16px 52px;position:relative;margin-bottom:-1px;
+}
+.lista-acoes li.sem-acao{padding-left:18px}
+.lista-acoes li.sem-acao::before{content:none}
+.lista-acoes li::before{
+  content:counter(acao);position:absolute;left:18px;top:16px;
+  font-family:var(--serif);font-size:17px;color:var(--secundario);
+}
+.lista-acoes strong{display:block;font-weight:600}
+.lista-acoes span{color:var(--secundario);font-size:13px}
+
+.sinais{list-style:none;margin:0;padding:0;border:1px solid var(--borda);background:var(--surface)}
+.sinais li{display:flex;gap:16px;justify-content:space-between;align-items:center;padding:13px 18px;border-bottom:1px solid var(--borda)}
+.sinais li:last-child{border-bottom:none}
+.sinais .texto{flex:1}
+.sinais .texto small{display:block;color:var(--secundario);font-size:12px}
+
+.barra{display:flex;height:10px;border:1px solid var(--borda);background:var(--surface);margin:6px 0 12px;overflow:hidden}
+.barra i{display:block;height:100%}
+.protecao{background:var(--neutro)}
+.objetivos{background:var(--positivo)}
+.livre{background:var(--bg)}
+.legenda-barra{display:flex;flex-wrap:wrap;gap:18px;font-size:12px;color:var(--secundario)}
+.legenda-barra span{display:flex;align-items:center;gap:7px}
+.legenda-barra i{width:9px;height:9px;display:inline-block;border:1px solid var(--borda)}
+
+.esqueleto{border:1px solid var(--borda);background:var(--surface);padding:22px}
+.esqueleto div{height:13px;background:var(--borda);margin-bottom:12px;opacity:.65}
+.esqueleto div:nth-child(1){width:38%}
+.esqueleto div:nth-child(2){width:88%}
+.esqueleto div:nth-child(3){width:72%}
+.esqueleto div:nth-child(4){width:54%;margin-bottom:0}
+@media (prefers-reduced-motion: no-preference){
+  .esqueleto div{animation:pulsar 1.6s ease-in-out infinite}
+  @keyframes pulsar{0%,100%{opacity:.45}50%{opacity:.8}}
+}
+
+footer{max-width:960px;margin:0 auto;padding:24px;border-top:1px solid var(--borda);color:var(--secundario);font-size:12px}
+
+@media (max-width:820px){
+  .grade-4{grid-template-columns:repeat(2,1fr)}
+  .grade-3{grid-template-columns:repeat(2,1fr)}
+}
+@media (max-width:560px){
+  main{padding:24px 16px 56px}
+  .topo-interno{padding:14px 16px}
+  h1{font-size:25px}
+  .grade-4,.grade-3,.grade-2{grid-template-columns:1fr}
+  .numero{font-size:23px}
+  .sinais li{flex-direction:column;align-items:flex-start;gap:8px}
+}
+@media print{.topo{position:static}}
+</style>
+</head>
+<body>
+<a class="pular" href="#conteudo">Ir para o conteúdo</a>
+
+<header class="topo">
+  <div class="topo-interno">
+    <div class="marca">Finance OS <span id="marca-competencia">carregando</span></div>
+    <nav class="nav-secoes" aria-label="Seções do painel">
+      <a href="#visao-geral">Visão geral</a>
+      <a href="#planejamento">Planejamento</a>
+      <a href="#patrimonio">Patrimônio</a>
+      <a href="#historico">Histórico</a>
+    </nav>
+  </div>
+</header>
+
+<main id="conteudo" tabindex="-1">
+  <div id="estado-carregando" class="esqueleto" aria-live="polite" aria-busy="true">
+    <div></div><div></div><div></div><div></div>
+  </div>
+
+  <div id="estado-erro" class="faixa faixa-risco" hidden>
+    <strong>Não foi possível ler o fechamento</strong>
+    <span id="erro-motivo"></span>
+  </div>
+
+  <div id="estado-vazio" class="cartao" hidden>
+    <h1>Nenhum fechamento disponível</h1>
+    <p class="legenda" id="vazio-motivo"></p>
+    <div id="vazio-bloqueios"></div>
+  </div>
+
+  <div id="painel" hidden>
+    <section id="visao-geral" aria-labelledby="titulo-visao">
+      <h1 id="titulo-visao">Visão geral</h1>
+      <p class="legenda" id="visao-subtitulo"></p>
+      <div id="faixa-frescor"></div>
+      <div id="faixa-bloqueios"></div>
+
+      <div class="grade grade-4" id="estado-ciclo"></div>
+
+      <h3>O que exige decisão</h3>
+      <ol class="lista-acoes" id="acoes"></ol>
+
+      <h3>Dinheiro</h3>
+      <div class="grade grade-4" id="dinheiro"></div>
+
+      <h3>Funções do dinheiro</h3>
+      <div class="cartao" id="funcoes"></div>
+
+      <h3>Trading</h3>
+      <div class="grade grade-4" id="trading"></div>
+      <p class="nota">As quatro métricas são independentes e estão em moedas diferentes: não são somáveis entre si.</p>
+
+      <h3>Sinais do ciclo de 90 dias</h3>
+      <ul class="sinais" id="sinais"></ul>
+      <p class="nota">Sete leituras binárias e independentes. Não existe score nem índice composto.</p>
+    </section>
+
+    <section id="planejamento" aria-labelledby="titulo-planejamento">
+      <h2 id="titulo-planejamento">Planejamento</h2>
+      <div class="grade grade-3" id="custo-vida"></div>
+      <h3>Provisões</h3>
+      <div class="tabela-rolagem"><table id="tabela-provisoes"></table></div>
+      <h3>Objetivos</h3>
+      <div class="tabela-rolagem"><table id="tabela-objetivos"></table></div>
+    </section>
+
+    <section id="patrimonio" aria-labelledby="titulo-patrimonio">
+      <h2 id="titulo-patrimonio">Patrimônio</h2>
+      <div class="grade grade-2" id="patrimonio-resumo"></div>
+      <h3>Posições</h3>
+      <div class="tabela-rolagem"><table id="tabela-posicoes"></table></div>
+      <h3>Trading (universo separado)</h3>
+      <div class="cartao" id="trading-separado"></div>
+    </section>
+
+    <section id="historico" aria-labelledby="titulo-historico">
+      <h2 id="titulo-historico">Histórico</h2>
+      <p class="legenda">Fechamentos são imutáveis. Correções aparecem como nova versão marcada como reapresentação.</p>
+      <div class="tabela-rolagem"><table id="tabela-historico"></table></div>
+      <h3>Reapresentações</h3>
+      <div class="tabela-rolagem"><table id="tabela-restatements"></table></div>
+    </section>
+  </div>
+</main>
+
+<footer>
+  Painel somente leitura. Toda regra financeira vive na planilha; esta página não calcula, não escreve e não executa nenhuma ação financeira.
+  <span id="rodape-gerado"></span>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  // Payload injetado pelo Apps Script. Em preview local o mesmo formato é
+  // usado com dataset sintético. A página NUNCA busca dados por conta própria.
+  var PAINEL = /*__PAINEL__*/null;
+
+  var NUM = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  var NUM1 = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+  function esc(valor) {
+    if (valor === null || valor === undefined) return '';
+    return String(valor)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function el(id) { return document.getElementById(id); }
+
+  /** Formata um valor gerenciado. Nunca inventa zero: sem valor, mostra travessão. */
+  function valorTexto(m, moeda, casas) {
+    if (!m || m.value === null || m.value === undefined) return null;
+    var n = Number(m.value);
+    if (!isFinite(n)) return null;
+    return (casas === 1 ? NUM1 : NUM).format(n);
+  }
+
+  function classeStatus(status) {
+    if (status === 'OK' || status === 'COMPLETO') return 'selo-positivo';
+    if (status === 'ATENCAO' || status === 'STALE' || status === 'PARCIAL') return 'selo-atencao';
+    if (status === 'ERROR' || status === 'BLOQUEADO' || status === 'EM_RISCO') return 'selo-risco';
+    return 'selo-neutro';
+  }
+
+  function celulaValor(rotulo, m, moeda, casas) {
+    var texto = valorTexto(m, moeda, casas);
+    var corpo = texto === null
+      ? '<div class="numero vazio">—</div><div class="motivo">' + esc((m && m.reason) || 'VALOR_INDISPONIVEL') + '</div>'
+      : '<div class="numero">' + (moeda ? '<span class="moeda">' + esc(moeda) + '</span>' : '') + esc(texto) + '</div>';
+    return '<div class="celula"><div class="rotulo">' + esc(rotulo) + '</div>' + corpo + '</div>';
+  }
+
+  function celulaTexto(rotulo, texto, status, motivo) {
+    return '<div class="celula"><div class="rotulo">' + esc(rotulo) + '</div>'
+      + '<div><span class="selo ' + classeStatus(status) + '">' + esc(texto || '—') + '</span></div>'
+      + (motivo ? '<div class="motivo">' + esc(motivo) + '</div>' : '')
+      + '</div>';
+  }
+
+  function tabela(alvo, legenda, colunas, linhas, vazio) {
+    var cabecalho = '<caption>' + esc(legenda) + '</caption><thead><tr>'
+      + colunas.map(function (c) {
+        return '<th' + (c.num ? ' class="num" scope="col"' : ' scope="col"') + '>' + esc(c.titulo) + '</th>';
+      }).join('') + '</tr></thead>';
+    var corpo = linhas.length
+      ? linhas.map(function (linha) {
+        return '<tr>' + colunas.map(function (c) {
+          var v = linha[c.chave];
+          return '<td' + (c.num ? ' class="num"' : '') + '>' + (v === null || v === undefined || v === '' ? '—' : v) + '</td>';
+        }).join('') + '</tr>';
+      }).join('')
+      : '<tr><td colspan="' + colunas.length + '">' + esc(vazio || 'Nada registrado.') + '</td></tr>';
+    alvo.innerHTML = cabecalho + '<tbody>' + corpo + '</tbody>';
+  }
+
+  function selo(texto, status) {
+    return '<span class="selo ' + classeStatus(status) + '">' + esc(texto) + '</span>';
+  }
+
+  function numeroSimples(v, casas) {
+    if (v === null || v === undefined || v === '') return null;
+    var n = Number(v);
+    if (!isFinite(n)) return null;
+    return (casas === 1 ? NUM1 : NUM).format(n);
+  }
+
+  function mostrar(idVisivel) {
+    ['estado-carregando', 'estado-erro', 'estado-vazio', 'painel'].forEach(function (id) {
+      var node = el(id);
+      if (!node) return;
+      node.hidden = id !== idVisivel;
+      if (id === 'estado-carregando') node.setAttribute('aria-busy', String(id === idVisivel));
+    });
+  }
+
+  function renderBloqueios(alvo, bloqueios) {
+    if (!bloqueios || !bloqueios.length) { alvo.innerHTML = ''; return; }
+    alvo.innerHTML = bloqueios.map(function (b) {
+      return '<div class="faixa faixa-risco"><strong>' + esc(b.codigo) + '</strong>'
+        + '<span>' + esc(b.detalhe || 'Impede o fechamento.') + '</span></div>';
+    }).join('');
+  }
+
+  function renderVisaoGeral(d, vm) {
+    el('visao-subtitulo').textContent = 'Competência ' + d.competencia
+      + ' · fechamento ' + (d.estado || 'indefinido').toLowerCase()
+      + ' · qualidade ' + (d.qualidade ? d.qualidade.nivel.toLowerCase() : 'indefinida');
+    el('marca-competencia').textContent = d.competencia;
+
+    var frescor = el('faixa-frescor');
+    if (vm.status !== 'OK') {
+      frescor.innerHTML = '<div class="faixa faixa-atencao"><strong>Dado não está fresco ('
+        + esc(vm.status) + ')</strong><span>' + esc(vm.reason || '') + '</span></div>';
+    } else {
+      frescor.innerHTML = '';
+    }
+
+    el('estado-ciclo').innerHTML = [
+      celulaTexto('Estado formal', d.estado_ciclo.formal, d.estado_ciclo.formal ? 'OK' : 'NULL',
+        d.estado_ciclo.formal ? '' : 'ESTADO_INDISPONIVEL'),
+      celulaTexto('Estado sugerido', d.estado_ciclo.sugerido, d.estado_ciclo.sugerido ? 'OK' : 'DADO_INSUFICIENTE',
+        d.estado_ciclo.sugerido ? '' : 'SEM_DADOS_SUFICIENTES'),
+      celulaTexto('Movimento', d.estado_ciclo.movimento, 'NEUTRO', d.estado_ciclo.motivo),
+      celulaTexto('Qualidade', d.qualidade.nivel, d.qualidade.nivel === 'COMPLETO' ? 'OK' : 'ATENCAO',
+        'Fila aberta: ' + d.qualidade.itens_fila_abertos
+          + ' · conciliações pendentes: ' + d.qualidade.conciliacoes_pendentes)
+    ].join('');
+
+    var acoes = (d.acoes || []).slice(0, 3);
+    el('acoes').innerHTML = acoes.length
+      ? acoes.map(function (a) {
+        return '<li><strong>' + esc(a.codigo.replace(/_/g, ' ').toLowerCase()) + '</strong>'
+          + '<span>' + esc(a.descricao) + '</span></li>';
+      }).join('')
+      : '<li class="sem-acao"><strong>Nenhuma ação pendente</strong>'
+        + '<span>Nada neste fechamento exige decisão sua.</span></li>';
+
+    el('dinheiro').innerHTML = [
+      celulaValor('Caixa de vida', d.vida.caixa_vida_brl, 'BRL'),
+      celulaValor('Disponível', d.vida.disponivel_brl, 'BRL'),
+      celulaValor('Runway', d.vida.runway_meses, 'meses', 1),
+      celulaValor('Custo de vida no mês', d.vida.custo_vida_mes_brl, 'BRL')
+    ].join('');
+
+    var f = d.vida.funcoes_do_dinheiro || {};
+    var funcoes = el('funcoes');
+    if (f.status !== 'OK' || f.total === null || f.total === undefined) {
+      funcoes.innerHTML = '<div class="numero vazio">—</div><div class="motivo">'
+        + esc(f.reason || 'FUNCOES_INDISPONIVEIS') + '</div>';
+    } else {
+      var total = Math.max(Math.abs(Number(f.total)), 0.01);
+      var partes = [
+        { nome: 'Proteção', classe: 'protecao', valor: Number(f.protecao) || 0 },
+        { nome: 'Objetivos', classe: 'objetivos', valor: Number(f.objetivos) || 0 },
+        { nome: 'Livre', classe: 'livre', valor: Math.max(Number(f.livre) || 0, 0) }
+      ];
+      funcoes.innerHTML = '<div class="barra" role="img" aria-label="'
+        + esc(partes.map(function (p) { return p.nome + ' ' + NUM.format(p.valor) + ' reais'; }).join(', ')) + '">'
+        + partes.map(function (p) {
+          var pct = Math.max(0, Math.min(100, (p.valor / total) * 100));
+          return '<i class="' + p.classe + '" style="width:' + pct.toFixed(2) + '%"></i>';
+        }).join('') + '</div>'
+        + '<div class="legenda-barra">'
+        + partes.map(function (p) {
+          return '<span><i class="' + p.classe + '"></i>' + esc(p.nome) + ' · BRL ' + esc(NUM.format(p.valor)) + '</span>';
+        }).join('')
+        + '</div>'
+        + (Number(f.livre) < 0
+          ? '<p class="nota">Livre negativo: o dinheiro com função definida excede o caixa de vida.</p>'
+          : '');
+    }
+
+    var m = d.trading.metricas;
+    el('trading').innerHTML = [
+      celulaValor('Caixa retirado', m.caixa_retirado_brl, 'BRL'),
+      celulaValor('P&L operacional', m.pnl_operacional_gbp, 'GBP'),
+      celulaValor('Resultado da reserva', m.resultado_reserva_brl, 'BRL'),
+      celulaValor('Custo operacional', m.custo_operacional_brl, 'BRL')
+    ].join('');
+
+    var rotulos = {
+      REDUCAO_PROTECAO: 'Proteção reduziu no mês',
+      GASTO_EXTRAORDINARIO_ANORMAL: 'Gasto extraordinário acima do limite',
+      VIDA_PARA_TRADING: 'Dinheiro da Vida foi para o Trading',
+      RESERVA_FORA_DA_FINALIDADE: 'Reserva usada fora da finalidade',
+      QUEDA_RUNWAY: 'Runway caiu além do limite',
+      COMPROMISSO_SEM_PROVISAO: 'Compromisso assumido sem provisão',
+      RETIRADA_APOS_MES_FORTE: 'Retirada de patrimônio após mês forte'
+    };
+    el('sinais').innerHTML = (d.sinais || []).map(function (s) {
+      // Sinal sem leitura é distinguido: falta de histórico não é a mesma
+      // coisa que um insumo indisponível.
+      var texto = s.valor === true ? 'Sim'
+        : (s.valor === false ? 'Não'
+          : (s.status === 'DADO_INSUFICIENTE' ? 'Dado insuficiente' : 'Indisponível'));
+      var status = s.valor === true ? 'ATENCAO' : (s.valor === false ? 'OK' : 'NEUTRO');
+      return '<li><span class="texto">' + esc(rotulos[s.codigo] || s.codigo)
+        + (s.reason ? '<small>' + esc(s.reason) + '</small>' : '')
+        + '</span>' + selo(texto, status) + '</li>';
+    }).join('');
+  }
+
+  function renderPlanejamento(d) {
+    el('custo-vida').innerHTML = [
+      celulaValor('Custo de vida no mês', d.vida.custo_vida_mes_brl, 'BRL'),
+      celulaValor('Custo de vida médio', d.vida.custo_vida_medio_brl, 'BRL'),
+      celulaValor('Runway', d.vida.runway_meses, 'meses', 1)
+    ].join('');
+
+    tabela(el('tabela-provisoes'), 'Provisões versionadas, com ritmo observado e necessário.', [
+      { titulo: 'Provisão', chave: 'nome' },
+      { titulo: 'Status', chave: 'status' },
+      { titulo: 'Alvo', chave: 'alvo', num: true },
+      { titulo: 'Acumulado', chave: 'acumulado', num: true },
+      { titulo: 'Faltante', chave: 'faltante', num: true },
+      { titulo: 'Ritmo obs.', chave: 'observado', num: true },
+      { titulo: 'Ritmo nec.', chave: 'necessario', num: true },
+      { titulo: 'Vencimento', chave: 'vencimento' }
+    ], (d.provisoes || []).map(function (p) {
+      return {
+        nome: esc(p.nome),
+        status: selo(p.status.replace(/_/g, ' ').toLowerCase(),
+          p.status === 'COBERTA' || p.status === 'EM_RITMO' ? 'OK'
+            : (p.status === 'EM_RISCO' ? 'EM_RISCO' : (p.status === 'FORA_DE_RITMO' ? 'ATENCAO' : 'NEUTRO'))),
+        alvo: numeroSimples(p.valor_alvo),
+        acumulado: numeroSimples(p.valor_acumulado),
+        faltante: numeroSimples(p.valor_faltante),
+        observado: numeroSimples(p.ritmo_observado),
+        necessario: numeroSimples(p.ritmo_necessario),
+        vencimento: esc(p.vencimento)
+      };
+    }), 'Nenhuma provisão registrada.');
+
+    tabela(el('tabela-objetivos'), 'Objetivos de patrimônio e progresso.', [
+      { titulo: 'Objetivo', chave: 'nome' },
+      { titulo: 'Status', chave: 'status' },
+      { titulo: 'Alvo', chave: 'alvo', num: true },
+      { titulo: 'Acumulado', chave: 'acumulado', num: true },
+      { titulo: 'Faltante', chave: 'faltante', num: true },
+      { titulo: 'Prazo', chave: 'prazo' }
+    ], (d.objetivos || []).map(function (o) {
+      return {
+        nome: esc(o.nome),
+        status: selo(o.status.replace(/_/g, ' ').toLowerCase(),
+          o.status === 'ATINGIDO' || o.status === 'EM_RITMO' ? 'OK'
+            : (o.status === 'PRAZO_EXPIRADO' ? 'EM_RISCO' : (o.status === 'FORA_DE_RITMO' ? 'ATENCAO' : 'NEUTRO'))),
+        alvo: numeroSimples(o.valor_alvo),
+        acumulado: numeroSimples(o.valor_acumulado),
+        faltante: numeroSimples(o.valor_faltante),
+        prazo: esc(o.prazo)
+      };
+    }), 'Nenhum objetivo registrado.');
+  }
+
+  function renderPatrimonio(d) {
+    var porMoeda = (d.patrimonio && d.patrimonio.por_moeda) || {};
+    var celulas = Object.keys(porMoeda).sort().map(function (moeda) {
+      var bloco = porMoeda[moeda];
+      return celulaValor('Valor de mercado em ' + moeda,
+        bloco.incompleto
+          ? { value: null, status: 'NULL', reason: 'POSICAO_SEM_SNAPSHOT' }
+          : { value: bloco.valor_mercado, status: 'OK' },
+        moeda);
+    });
+    celulas.push(celulaValor('Patrimônio gerencial', d.patrimonio.brl_gerencial, d.moeda_gerencial || 'BRL'));
+    el('patrimonio-resumo').innerHTML = celulas.join('');
+
+    tabela(el('tabela-posicoes'), 'Posições por moeda. Nada é convertido sem taxa disponível.', [
+      { titulo: 'Posição', chave: 'id' },
+      { titulo: 'Moeda', chave: 'moeda' },
+      { titulo: 'Capital investido', chave: 'capital', num: true },
+      { titulo: 'Valor de mercado', chave: 'mercado', num: true },
+      { titulo: 'Snapshot', chave: 'snapshot' },
+      { titulo: 'Qualidade', chave: 'qualidade' }
+    ], ((d.patrimonio && d.patrimonio.posicoes) || []).map(function (p) {
+      return {
+        id: esc(p.posicao_id),
+        moeda: esc(p.moeda),
+        capital: numeroSimples(p.capital_investido),
+        mercado: numeroSimples(p.valor_mercado),
+        snapshot: esc(p.data_snapshot),
+        qualidade: selo((p.snapshot_status || '').toLowerCase(),
+          p.snapshot_status === 'OK' ? 'OK' : (p.snapshot_status === 'STALE' ? 'ATENCAO' : 'NEUTRO'))
+      };
+    }), 'Nenhuma posição registrada.');
+
+    var cap = d.trading.capital_gbp;
+    var texto = valorTexto(cap, 'GBP');
+    el('trading-separado').innerHTML = '<div class="rotulo">Capital em trading</div>'
+      + (texto === null
+        ? '<div class="numero vazio">—</div><div class="motivo">' + esc(cap.reason || 'INDISPONIVEL') + '</div>'
+        : '<div class="numero"><span class="moeda">GBP</span>' + esc(texto) + '</div>')
+      + '<p class="nota">Trading é um universo separado: este capital nunca é somado ao patrimônio.</p>';
+  }
+
+  function renderHistorico(painel) {
+    tabela(el('tabela-historico'), 'Fechamentos congelados, do mais antigo ao mais recente.', [
+      { titulo: 'Competência', chave: 'competencia' },
+      { titulo: 'Versão', chave: 'versao' },
+      { titulo: 'Estado do ciclo', chave: 'estado' },
+      { titulo: 'Disponível', chave: 'disponivel', num: true },
+      { titulo: 'Runway', chave: 'runway', num: true },
+      { titulo: 'Patrimônio', chave: 'patrimonio', num: true },
+      { titulo: 'Qualidade', chave: 'qualidade' },
+      { titulo: 'Checksum', chave: 'checksum' }
+    ], (painel.historico || []).map(function (h) {
+      return {
+        competencia: esc(h.competencia),
+        versao: 'v' + esc(h.versao) + (h.restatement ? ' ' + selo('reapresentado', 'ATENCAO') : ''),
+        estado: esc(h.estado_ciclo_formal),
+        disponivel: numeroSimples(h.disponivel_brl),
+        runway: numeroSimples(h.runway_meses, 1),
+        patrimonio: numeroSimples(h.patrimonio_brl_gerencial),
+        qualidade: selo((h.qualidade || '').toLowerCase(), h.qualidade === 'COMPLETO' ? 'OK' : 'ATENCAO'),
+        checksum: '<code>' + esc(h.checksum_curto) + '</code>'
+      };
+    }), 'Nenhum fechamento registrado.');
+
+    tabela(el('tabela-restatements'), 'Reapresentações: cada uma gerou uma nova versão, sem sobrescrever a anterior.', [
+      { titulo: 'Competência', chave: 'competencia' },
+      { titulo: 'De', chave: 'de' },
+      { titulo: 'Para', chave: 'para' },
+      { titulo: 'Campos alterados', chave: 'campos', num: true },
+      { titulo: 'Motivo', chave: 'motivo' }
+    ], (painel.restatements || []).map(function (r) {
+      return {
+        competencia: esc(r.competencia),
+        de: 'v' + esc(r.versao_origem),
+        para: 'v' + esc(r.versao_nova),
+        campos: esc(r.campos_alterados),
+        motivo: esc(r.motivo)
+      };
+    }), 'Nenhuma reapresentação registrada.');
+  }
+
+  function render(painel) {
+    if (!painel) {
+      el('vazio-motivo').textContent = 'O painel não recebeu dados.';
+      mostrar('estado-vazio');
+      return;
+    }
+    el('rodape-gerado').textContent = painel.gerado_em ? ' Gerado em ' + painel.gerado_em + '.' : '';
+
+    var vm = painel.atual || {};
+    if (vm.status === 'ERROR') {
+      el('erro-motivo').textContent = vm.reason || 'ERRO_DESCONHECIDO';
+      mostrar('estado-erro');
+      return;
+    }
+    if (!vm.dados) {
+      el('vazio-motivo').textContent = vm.reason || 'SEM_FECHAMENTO_DISPONIVEL';
+      renderBloqueios(el('vazio-bloqueios'), painel.bloqueios);
+      mostrar('estado-vazio');
+      return;
+    }
+
+    var d = vm.dados;
+    renderVisaoGeral(d, vm);
+    renderBloqueios(el('faixa-bloqueios'), painel.bloqueios);
+    renderPlanejamento(d);
+    renderPatrimonio(d);
+    renderHistorico(painel);
+    mostrar('painel');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { render(PAINEL); });
+  } else {
+    render(PAINEL);
+  }
+})();
+</script>
+</body>
+</html>

@@ -228,7 +228,11 @@ function eventoPosicao(campos) {
 const POSICOES = [
   eventoPosicao({ evento_id: 'PE001', tipo_evento: 'APORTE', data: '2026-01-20', valor: 2000, quantidade: 20 }),
   eventoPosicao({ evento_id: 'PE002', tipo_evento: 'SNAPSHOT_VALOR_MERCADO', data: '2026-01-31', valor: 2050 }),
-  eventoPosicao({ evento_id: 'PE003', tipo_evento: 'APORTE', data: '2026-02-10', valor: 1500, quantidade: 14 }),
+  // origem = EV010: este aporte É a materialização do evento manual APORTE_POSICAO.
+  eventoPosicao({
+    evento_id: 'PE003', tipo_evento: 'APORTE', data: '2026-02-10',
+    valor: 1500, quantidade: 14, origem: 'EV010'
+  }),
   eventoPosicao({ evento_id: 'PE004', tipo_evento: 'DISTRIBUICAO', data: '2026-02-20', valor: 30 }),
   eventoPosicao({ evento_id: 'PE005', tipo_evento: 'SNAPSHOT_VALOR_MERCADO', data: '2026-02-28', valor: 3650 }),
   eventoPosicao({ evento_id: 'PE006', tipo_evento: 'SNAPSHOT_VALOR_MERCADO', data: '2026-03-31', valor: 3720 })

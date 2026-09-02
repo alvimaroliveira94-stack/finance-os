@@ -3,8 +3,9 @@
  * Catálogo dos cenários canônicos.
  * Cada teste declara o cenário que cobre; o runner mostra a matriz de
  * cobertura e falha se algum cenário obrigatório ficar sem teste.
- * Os três últimos são superfícies visuais: ficam marcados como PENDENTE
- * nesta onda e são implementados junto com o dashboard.
+ * C37 a C39 cobrem as superfícies visuais e passaram a ser verificados
+ * estruturalmente sobre o HTML do dashboard; o harness opcional
+ * `npm run qa:visual` complementa com medição em navegador real.
  */
 const CENARIOS = [
   { id: 'C01', nome: 'Duplicatas legítimas permanecem distintas' },
@@ -43,9 +44,18 @@ const CENARIOS = [
   { id: 'C34', nome: 'View-model respeita a allowlist' },
   { id: 'C35', nome: 'View-model expõe error, stale e null com motivo' },
   { id: 'C36', nome: 'Log de auditoria registra antes e depois' },
-  { id: 'C37', nome: 'Acessibilidade do dashboard', visual: true },
-  { id: 'C38', nome: 'Layout mobile do dashboard', visual: true },
-  { id: 'C39', nome: 'Navegação por teclado do dashboard', visual: true }
+  { id: 'C37', nome: 'Acessibilidade do dashboard' },
+  { id: 'C38', nome: 'Layout mobile do dashboard' },
+  { id: 'C39', nome: 'Navegação por teclado do dashboard' },
+  { id: 'C40', nome: 'Fila: resolução exige escolha explícita e é auditada' },
+  { id: 'C41', nome: 'Período fechado protegido contra reclassificação' },
+  { id: 'C42', nome: 'Obrigação e objetivo materializam subledger versionado' },
+  { id: 'C43', nome: 'Aporte e retirada de posição viram evento append-only' },
+  { id: 'C44', nome: 'Diagnóstico de setup explica o que bloqueia o fechamento' },
+  { id: 'C45', nome: 'Taxa de câmbio: política, cache materializado e erro seguro' },
+  { id: 'C46', nome: 'Abas visíveis geradas idempotentemente do modelo canônico' },
+  { id: 'C47', nome: 'Dashboard consome apenas o payload allowlisted' },
+  { id: 'C48', nome: 'Painel restrito e sem endpoint mutável' }
 ];
 
 module.exports = { CENARIOS };

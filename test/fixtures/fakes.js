@@ -8,8 +8,11 @@ const FOS = require('../_load');
 /** Planilha em memória: tabelas nomeadas com cabeçalho na primeira linha. */
 function planilhaFake() {
   const abas = {};
+  const chamadas = [];
+  const ocultas = {};
   return {
     _abas: abas,
+    _chamadas: chamadas,
     listarAbas() { return Object.keys(abas); },
     criarAba(nome, headers) {
       if (!abas[nome]) abas[nome] = { headers: (headers || []).slice(), linhas: [] };
@@ -33,6 +36,27 @@ function planilhaFake() {
       });
       return objetos.length;
     },
+    // Formatação e proteção são cosméticas: o fake apenas registra as chamadas,
+    // para que os testes provem que o bootstrap as aplica.
+    formatarAba(nome, spec) { chamadas.push({ metodo: 'formatarAba', nome, spec }); return nome; },
+    validarColunaPorLista(nome, coluna, valores) {
+      chamadas.push({ metodo: 'validarColunaPorLista', nome, coluna, valores });
+      return true;
+    },
+    protegerColunas(nome, colunas, descricao) {
+      chamadas.push({ metodo: 'protegerColunas', nome, colunas, descricao });
+      return nome;
+    },
+    ocultarAba(nome, oculta) {
+      chamadas.push({ metodo: 'ocultarAba', nome, oculta });
+      ocultas[nome] = !!oculta;
+      return nome;
+    },
+    notaAba(nome, texto) { chamadas.push({ metodo: 'notaAba', nome, texto }); return nome; },
+    ordenarAbas(ordem) { chamadas.push({ metodo: 'ordenarAbas', ordem }); return ordem; },
+    abaEstaOculta(nome) { return !!ocultas[nome]; },
+    chamadasDe(metodo) { return chamadas.filter((c) => c.metodo === metodo); },
+
     substituirTabela(nome, objetos) {
       abas[nome].linhas = [];
       return this.anexarLinhas(nome, objetos);

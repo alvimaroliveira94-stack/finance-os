@@ -3,8 +3,8 @@
 Sistema financeiro pessoal com **fonte única no Google Sheets** e motor em **Google Apps Script**,
 com harness local em Node para testar todo o domínio fora do Google.
 
-Onda atual: **núcleo funcional e testável (fases 0–5)**. As superfícies visuais
-(dashboard de leitura e abas visíveis populadas) estão preparadas, mas ficam para a próxima onda.
+Onda atual: **experiência completa do V1** — núcleo funcional, fluxos operacionais fechados,
+quatro abas visíveis populadas e dashboard HTML somente leitura.
 
 ---
 
@@ -32,7 +32,13 @@ Workflows    (orquestração e escrita, com log de auditoria)       -- src/app
         |
         v
 Domínio puro (regras, sem nenhuma API do Google)                  -- src/domain
+        |
+        v
+View-model allowlisted  ->  abas visíveis (Sheets) e painel HTML  -- src/ui
 ```
+
+O painel e as abas visíveis são **projeção**: podem ser apagados e regerados
+sem perda, porque a verdade está nas abas internas.
 
 O domínio é **puro por contrato** e há teste automatizado que falha se algum arquivo de
 `src/domain` referenciar `SpreadsheetApp`, `DriveApp`, `UrlFetchApp`, `new Date()` ou `Math.random()`.
@@ -125,6 +131,42 @@ queda de runway, compromisso sem provisão, retirada/redução alocativa após m
 (este exige 3 fechamentos anteriores).
 Limite reversível de gasto extraordinário: **30% do caixa de vida vigente** (parâmetro em `00`).
 
+### Superfícies de leitura
+
+As quatro abas visíveis são geradas idempotentemente pelo Apps Script a partir do
+fechamento vigente — nunca são uma segunda fonte de verdade.
+
+| Aba | O que mostra |
+|---|---|
+| `HOME` | Estado formal e sugerido, qualidade e frescor, dinheiro e runway, funções do dinheiro, as quatro métricas de trading separadas por moeda, os sete sinais, as três ações que exigem decisão e os bloqueios. |
+| `MOVIMENTAÇÕES` | Visão mediada do ledger. Colunas de origem protegidas; categoria muda só pela fila de revisão e só em competência aberta. |
+| `PLANEJAMENTO` | Custo de vida, provisões e objetivos versionados com ritmo observado e necessário. |
+| `PATRIMÔNIO` | Posições, totais por moeda, patrimônio gerencial e o capital de Trading em bloco separado. |
+
+Abas internas de motor ficam ocultas (o dono reexibe pelo menu do Sheets quando
+precisar); `00`, `11`, `12` e `21` seguem visíveis porque são operadas no dia a dia.
+
+### Painel HTML
+
+Página única, no máximo 960px, servida pelo HTML Service **dentro da planilha**
+(nenhum web app publicado). Navegação por âncoras: Visão geral → Planejamento →
+Patrimônio → Histórico.
+
+- Consome exclusivamente o payload allowlisted, injetado no HTML pelo servidor.
+- Não faz conta financeira, não escreve, não chama o servidor, não carrega nada externo (CSP com `default-src 'none'` e `connect-src 'none'`).
+- Estados tratados: carregando, vazio, erro, desatualizado e valor nulo com motivo — nunca um zero falso.
+- Light-only, tokens fixos, contraste AA, teclado completo, `prefers-reduced-motion` respeitado.
+
+### Fluxos operacionais
+
+| Fluxo | O que faz |
+|---|---|
+| Resolver item da fila | Exige decisão explícita (categoria ou linha escolhida). Classifica a linha pendente ou cria nova versão gerencial, registra antes/depois e fecha o item. Idempotente. |
+| Materializar eventos | `NOVA_OBRIGACAO` e `NOVO_OBJETIVO` viram nova versão em `30`/`31`; `APORTE_POSICAO` e `RETIRADA_POSICAO` viram evento em `32`. Roda quantas vezes quiser sem duplicar. |
+| Registrar evento de posição | `DISTRIBUICAO` e `SNAPSHOT_VALOR_MERCADO` entram à mão. Correção só por evento compensatório. |
+| Diagnóstico de setup | Lista os parâmetros nulos/bloqueados, o impacto de cada um e as invariantes que ainda travam o fechamento. |
+| Cache de taxa | Política configurável (`MANUAL` por padrão). Em `HTTP`, consulta o provedor parametrizado, materializa a taxa na aba `00` e reusa o cache. Falha vira `null` + motivo — o fechamento continua bloqueado. |
+
 ---
 
 ## Comandos
@@ -134,12 +176,17 @@ npm test                 # roda tudo e imprime a matriz dos cenários canônicos
 npm run test:domain      # só testes de domínio
 npm run test:integration # só testes de integração (com fakes de plataforma)
 npm run scenarios        # só a matriz de cenários
+npm run preview          # gera out/preview-*.html com dataset sintético
+npm run qa:visual        # mede overflow, foco e contraste em Chromium headless
 node tools/seed.js config   # TSV da configuração sintética, para colar na aba 00
 node tools/seed.js regras   # TSV das regras sintéticas, para colar na aba 20
 ```
 
 O harness não tem dependência externa: só Node 18+.
 `npm test` falha se algum cenário canônico obrigatório ficar sem teste.
+
+`npm run qa:visual` é opcional e usa o Chromium local (defina `CHROME_PATH` se
+necessário). Ele só abre os previews sintéticos — nunca dado real.
 
 ## Setup local
 
@@ -155,11 +202,16 @@ Não há `npm install`: o projeto é dependência-zero de propósito.
 1. Crie uma planilha e abra **Extensões → Apps Script**.
 2. Cole os arquivos de `src/` no projeto de script (domínio, adaptadores, app e `main.js`)
    e o conteúdo de `src/appsscript.json` no manifesto.
-3. Recarregue a planilha e use o menu **Finance OS → 1. Criar/verificar estrutura**.
-4. Ajuste `00_CONFIG_PARAMETROS`: contas reais, saldo inicial do caixa de vida e parâmetros.
+3. Cole `src/ui/dashboard.html` como um arquivo HTML chamado `dashboard`.
+4. Recarregue a planilha e use o menu **Finance OS → Preparar planilha**.
+5. Ajuste `00_CONFIG_PARAMETROS`: contas reais, saldo inicial do caixa de vida e parâmetros.
    Parâmetros que você ainda não decidiu devem ficar com `status = BLOQUEADO` e um `reason` —
    o sistema respeita isso e devolve `null` em vez de inventar número.
-5. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
+6. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
+7. Use **Revisar pendências**, **Registrar evento** e **Fechar mês**; depois **Abrir painel**.
+
+O menu tem sete ações, em linguagem direta: Preparar planilha, Importar extrato,
+Revisar pendências, Registrar evento, Fechar mês, Abrir painel e Atualizar abas.
 
 Escopos declarados no manifesto: `spreadsheets.currentonly`, `script.container.ui` e
 `drive.readonly` (necessário para ler o arquivo de extrato pelo nome). Se preferir escopo
@@ -169,8 +221,10 @@ ainda menor, é possível trocar a leitura por colagem manual do CSV e remover `
 
 - **Não** conecta contas, **não** faz deploy, **não** publica web app, **não** move dinheiro.
 - Nenhum dado pessoal, saldo real, transação real ou PII existe neste repositório. Todo o dataset é sintético e marcado como tal.
-- Dashboard de leitura, população das abas visíveis e testes visuais (acessibilidade, mobile, teclado) ficam para a próxima onda; o contrato de dados (`view-model` com allowlist) já está pronto e testado.
-- O provedor de taxa padrão é manual (taxas registradas na planilha). O provedor HTTP existe e é testado com fake, mas não está apontado para nenhuma URL de produção.
+- O painel abre como diálogo dentro da planilha. `doGet` existe e só responde ao dono, mas **nada foi implantado**.
+- O provedor de taxa padrão é manual (taxas registradas na planilha). O provedor HTTP é parametrizado e testado com fake, sem nenhuma URL de produção configurada e sem nenhuma chamada real nesta entrega.
+- O painel é light-only no V1: não há tema escuro.
+- Não existe simulador de cenários, projeção ou score em nenhuma superfície.
 
 ## Documentos
 

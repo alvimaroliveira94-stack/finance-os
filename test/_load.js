@@ -37,6 +37,7 @@ const ORDEM = [
   'domain/closing.js',
   'domain/restatement.js',
   'domain/viewmodel.js',
+  'domain/surfaces.js',
   'adapters/clock.js',
   'adapters/spreadsheet.js',
   'adapters/drive.js',

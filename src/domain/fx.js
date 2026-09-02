@@ -84,8 +84,61 @@
     return tabela;
   }
 
+  /** Prefixo da chave de taxa materializada em 00_CONFIG_PARAMETROS. */
+  var SECAO_TAXA = 'TAXA';
+
+  function chaveCache(parNome, dataIso) {
+    return parNome + '@' + dataIso;
+  }
+
+  /**
+   * Linha de cache de taxa para a aba 00. Materializar na planilha é o que
+   * permite reprocessar um fechamento antigo com a MESMA taxa usada na época,
+   * sem depender do provedor estar no ar.
+   */
+  function linhaDeCache(moedaEstrangeira, moedaGerencial, dataIso, taxa, provedor, agora, reason) {
+    var bloqueada = taxa === null || taxa === undefined || !Number.isFinite(Number(taxa));
+    return {
+      secao: SECAO_TAXA,
+      chave: chaveCache(par(moedaEstrangeira, moedaGerencial), dataIso),
+      valor: bloqueada ? '' : Number(taxa),
+      tipo: 'NUMERO',
+      unidade: moedaGerencial + ' por ' + moedaEstrangeira,
+      universo: '',
+      modo_ingestao: '',
+      moeda: moedaEstrangeira,
+      ativa: '',
+      elegivel_importacao: '',
+      status: bloqueada ? 'BLOQUEADO' : 'ATIVO',
+      reason: bloqueada ? (reason || 'TAXA_NAO_PUBLICADA') : '',
+      versao: 1,
+      atualizado_em: agora || '',
+      descricao: 'Cache de taxa (' + (provedor || 'DESCONHECIDO') + '). Não editar à mão.'
+    };
+  }
+
+  /** Tabela de taxas a partir das linhas de cache da aba 00. */
+  function tabelaDeCache(configRows) {
+    var tabela = {};
+    (configRows || []).forEach(function (r) {
+      if (String(r.secao || '').toUpperCase() !== SECAO_TAXA) return;
+      if (String(r.status || '').toUpperCase() === 'BLOQUEADO') return;
+      var partes = String(r.chave || '').split('@');
+      if (partes.length !== 2) return;
+      var valor = Number(r.valor);
+      if (!Number.isFinite(valor)) return;
+      tabela[partes[0]] = tabela[partes[0]] || {};
+      tabela[partes[0]][partes[1]] = valor;
+    });
+    return tabela;
+  }
+
   FOS.Fx = {
+    SECAO_TAXA: SECAO_TAXA,
     par: par,
+    chaveCache: chaveCache,
+    linhaDeCache: linhaDeCache,
+    tabelaDeCache: tabelaDeCache,
     resolver: resolver,
     converter: converter,
     efeitoCambial: efeitoCambial,

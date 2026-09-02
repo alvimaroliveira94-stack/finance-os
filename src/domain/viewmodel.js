@@ -173,6 +173,61 @@
     return { status: status, reason: reason, dados: dados };
   }
 
+  /** Campos permitidos de um fechamento no histórico (lista curta e fechada). */
+  var ALLOWLIST_HISTORICO = [
+    'competencia', 'versao', 'estado', 'qualidade', 'fechado_em', 'moeda_gerencial',
+    'caixa_vida_brl', 'disponivel_brl', 'runway_meses', 'patrimonio_brl_gerencial',
+    'estado_ciclo_formal', 'estado_ciclo_sugerido', 'restatement', 'motivo_versao', 'checksum_curto'
+  ];
+
+  function historicoPermitido(fechamentos) {
+    return (fechamentos || []).map(function (f) {
+      var out = {};
+      ALLOWLIST_HISTORICO.forEach(function (campo) {
+        if (f[campo] !== undefined) out[campo] = f[campo];
+      });
+      return out;
+    });
+  }
+
+  function restatementsPermitidos(restatements) {
+    return (restatements || []).map(function (r) {
+      return {
+        restatement_id: r.restatement_id,
+        competencia: r.competencia,
+        versao_origem: r.versao_origem,
+        versao_nova: r.versao_nova,
+        motivo: r.motivo,
+        campos_alterados: String(r.campos_alterados || '').split(',').filter(Boolean).length,
+        criado_em: r.criado_em
+      };
+    });
+  }
+
+  /**
+   * Payload completo do painel de leitura: fechamento vigente, histórico
+   * imutável, restatements e bloqueios. É o ÚNICO objeto que o dashboard
+   * recebe — ele não tem acesso a mais nada.
+   */
+  function construirPainel(params) {
+    var p = params || {};
+    var atual = construir(p.snapshot, {
+      agora: p.agora,
+      maxIdadeDias: p.maxIdadeDias,
+      erro: p.erro
+    });
+    return {
+      gerado_em: p.agora || null,
+      somente_leitura: true,
+      atual: atual,
+      historico: historicoPermitido(p.historico),
+      restatements: restatementsPermitidos(p.restatements),
+      bloqueios: (p.bloqueios || []).map(function (b) {
+        return { codigo: b.codigo, detalhe: b.detalhe || null };
+      })
+    };
+  }
+
   /** Verifica que nenhum campo proibido vazou (usado em teste e em runtime). */
   function auditarVazamento(viewModel) {
     var texto = FOS.Core.canonicalJson(viewModel);
@@ -183,8 +238,10 @@
 
   FOS.ViewModel = {
     ALLOWLIST: ALLOWLIST,
+    ALLOWLIST_HISTORICO: ALLOWLIST_HISTORICO,
     CAMPOS_PROIBIDOS: CAMPOS_PROIBIDOS,
     construir: construir,
+    construirPainel: construirPainel,
     auditarVazamento: auditarVazamento
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -1,7 +1,7 @@
 /**
  * Bootstrap do workbook: cria as abas visíveis e internas com os cabeçalhos
- * do schema e semeia a configuração sintética quando a aba 00 está vazia.
- * Idempotente: rodar de novo não duplica nada.
+ * do schema, aplica formatação e proteção, e semeia a configuração sintética
+ * quando a aba 00 está vazia. Idempotente: rodar de novo não duplica nada.
  */
 (function (root) {
   'use strict';
@@ -9,19 +9,93 @@
   FOS.App = FOS.App || {};
   var C = FOS.Constants;
   var A = C.ABAS_INTERNAS;
+  var V = C.ABAS_VISIVEIS;
 
-  /** Cabeçalhos das abas visíveis (superfícies de leitura da próxima onda). */
+  var MOEDA = '#,##0.00';
+  var NUMERO = '#,##0.00';
+  var DATA = 'yyyy-mm-dd';
+
+  /**
+   * As quatro superfícies de leitura. O cabeçalho vem de Surfaces.COLUNAS
+   * para que aba e construtor nunca saiam de sincronia.
+   */
   var ABAS_VISIVEIS = [
-    { nome: C.ABAS_VISIVEIS.HOME, headers: ['Indicador', 'Valor', 'Status', 'Motivo', 'Competência'] },
-    { nome: C.ABAS_VISIVEIS.MOVIMENTACOES, headers: ['Data', 'Conta', 'Valor', 'Categoria', 'Universo', 'Origem', 'Status'] },
-    { nome: C.ABAS_VISIVEIS.PLANEJAMENTO, headers: ['Item', 'Tipo', 'Alvo', 'Acumulado', 'Faltante', 'Prazo', 'Status'] },
-    { nome: C.ABAS_VISIVEIS.PATRIMONIO, headers: ['Posição', 'Moeda', 'Capital investido', 'Valor de mercado', 'Snapshot', 'Status'] }
+    {
+      nome: V.HOME,
+      colunas: FOS.Surfaces.COLUNAS.HOME,
+      nota: 'HOME é gerada pelo Finance OS a partir do último fechamento. '
+        + 'Não edite: use o menu Finance OS para atualizar.',
+      formato: {
+        congelarLinhas: 1,
+        congelarColunas: 2,
+        larguras: [140, 300, 130, 90, 120, 260, 260],
+        formatos: { valor: NUMERO },
+        filtro: true
+      }
+    },
+    {
+      nome: V.MOVIMENTACOES,
+      colunas: FOS.Surfaces.COLUNAS.MOVIMENTACOES,
+      nota: 'Visão do ledger canônico. As colunas de origem são imutáveis; '
+        + 'categoria e subcategoria mudam apenas pela fila de revisão, '
+        + 'e só em competência ainda aberta.',
+      formato: {
+        congelarLinhas: 1,
+        congelarColunas: 2,
+        larguras: [100, 130, 340, 120, 70, 180, 150, 120, 140, 80, 100, 190, 120],
+        formatos: { valor: MOEDA, data: DATA },
+        filtro: true
+      },
+      protegidas: FOS.Surfaces.COLUNAS_ORIGEM_MOVIMENTACOES,
+      validacoes: [{ coluna: 'categoria', valores: C.values(C.CATEGORIA) }]
+    },
+    {
+      nome: V.PLANEJAMENTO,
+      colunas: FOS.Surfaces.COLUNAS.PLANEJAMENTO,
+      nota: 'Provisões e objetivos versionados. Alterações entram por evento '
+        + 'manual na aba 11, nunca digitando aqui.',
+      formato: {
+        congelarLinhas: 1,
+        congelarColunas: 2,
+        larguras: [150, 280, 150, 120, 120, 120, 140, 140, 110, 90, 200],
+        formatos: {
+          alvo: MOEDA, acumulado: MOEDA, faltante: MOEDA,
+          ritmo_necessario: MOEDA, ritmo_observado: MOEDA, vencimento: DATA
+        },
+        filtro: true
+      }
+    },
+    {
+      nome: V.PATRIMONIO,
+      colunas: FOS.Surfaces.COLUNAS.PATRIMONIO,
+      nota: 'Posições e patrimônio. O capital de Trading aparece em bloco '
+        + 'próprio e nunca é somado ao patrimônio.',
+      formato: {
+        congelarLinhas: 1,
+        congelarColunas: 2,
+        larguras: [170, 260, 80, 150, 150, 170, 130, 110, 120, 200],
+        formatos: {
+          capital_investido: MOEDA, valor_mercado: MOEDA,
+          resultado_nao_realizado: MOEDA, distribuicoes: MOEDA, snapshot: DATA
+        },
+        filtro: true
+      }
+    }
   ];
+
+  /** Abas internas ficam ocultas por padrão: são motor, não interface. */
+  var ABAS_INTERNAS_OCULTAS = [
+    A.IMPORT_EXTRATO, A.REGRAS, A.LEDGER, A.PROVISOES, A.OBJETIVOS,
+    A.POSICOES, A.FECHAMENTOS, A.RESTATEMENTS, A.LOG
+  ];
+
+  /** Abas internas que o usuário usa no dia a dia continuam visíveis. */
+  var ABAS_INTERNAS_OPERACIONAIS = [A.CONFIG, A.EVENTOS_MANUAIS, A.SALDOS_TRADING, A.FILA_REVISAO];
 
   function criarEstrutura(planilha) {
     var criadas = [];
     ABAS_VISIVEIS.forEach(function (aba) {
-      planilha.criarAba(aba.nome, aba.headers);
+      planilha.criarAba(aba.nome, aba.colunas);
       criadas.push(aba.nome);
     });
     FOS.Schema.nomes().forEach(function (nome) {
@@ -29,6 +103,38 @@
       criadas.push(nome);
     });
     return criadas;
+  }
+
+  /** Formatação das quatro superfícies. Cosmética e idempotente. */
+  function formatarSuperficies(planilha) {
+    if (!planilha.formatarAba) return [];
+    return ABAS_VISIVEIS.map(function (aba) {
+      planilha.formatarAba(aba.nome, aba.formato);
+      if (planilha.notaAba) planilha.notaAba(aba.nome, aba.nota);
+      if (aba.protegidas && planilha.protegerColunas) {
+        planilha.protegerColunas(aba.nome, aba.protegidas, 'origem imutável do ledger');
+      }
+      (aba.validacoes || []).forEach(function (v) {
+        if (planilha.validarColunaPorLista) planilha.validarColunaPorLista(aba.nome, v.coluna, v.valores);
+      });
+      return aba.nome;
+    });
+  }
+
+  /**
+   * Organiza o workbook: superfícies primeiro, abas operacionais depois,
+   * motor oculto. Ocultar não impede manutenção — o dono reexibe a aba
+   * pelo menu do Sheets a qualquer momento.
+   */
+  function organizarAbas(planilha) {
+    if (!planilha.ocultarAba) return [];
+    var ordem = ABAS_VISIVEIS.map(function (a) { return a.nome; })
+      .concat(ABAS_INTERNAS_OPERACIONAIS)
+      .concat(ABAS_INTERNAS_OCULTAS);
+    if (planilha.ordenarAbas) planilha.ordenarAbas(ordem);
+    ABAS_INTERNAS_OCULTAS.forEach(function (nome) { planilha.ocultarAba(nome, true); });
+    ABAS_INTERNAS_OPERACIONAIS.forEach(function (nome) { planilha.ocultarAba(nome, false); });
+    return ordem;
   }
 
   /** Semeia 00 e 20 apenas se estiverem vazias (nunca sobrescreve). */
@@ -48,24 +154,36 @@
     var criadas = criarEstrutura(planilha);
     var repositorio = deps.repositorio || FOS.App.criarRepositorio(planilha);
     var semeadas = semear(repositorio);
+    var formatadas = formatarSuperficies(planilha);
+    var ordem = deps.organizar === false ? [] : organizarAbas(planilha);
+
     if (deps.auditoria) {
       deps.auditoria.registrar({
         acao: 'BOOTSTRAP',
         entidade: 'WORKBOOK',
         entidade_id: '',
         antes: null,
-        depois: { abas: criadas.length, config_semeada: semeadas.config, regras_semeadas: semeadas.regras },
+        depois: {
+          abas: criadas.length,
+          config_semeada: semeadas.config,
+          regras_semeadas: semeadas.regras,
+          superficies_formatadas: formatadas.length
+        },
         resultado: 'OK',
         detalhe: 'Estrutura criada/verificada.'
       });
       deps.auditoria.persistir();
     }
-    return { abas: criadas, semeadas: semeadas };
+    return { abas: criadas, semeadas: semeadas, formatadas: formatadas, ordem: ordem };
   }
 
   FOS.App.Bootstrap = {
     ABAS_VISIVEIS: ABAS_VISIVEIS,
+    ABAS_INTERNAS_OCULTAS: ABAS_INTERNAS_OCULTAS,
+    ABAS_INTERNAS_OPERACIONAIS: ABAS_INTERNAS_OPERACIONAIS,
     criarEstrutura: criarEstrutura,
+    formatarSuperficies: formatarSuperficies,
+    organizarAbas: organizarAbas,
     semear: semear,
     inicializar: inicializar
   };

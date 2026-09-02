@@ -1,6 +1,6 @@
 # ADR 0001 — Arquitetura do núcleo do Finance OS
 
-Status: aceito · Onda: núcleo funcional (fases 0–5) · Data: 2026-05
+Status: aceito · Ondas 1 (núcleo) e 2 (experiência) · Data: 2026-05
 
 Este ADR registra **decisões técnicas reversíveis**. Decisões financeiras canônicas
 (categorias, sete eventos, quatro métricas de trading, regras de estado, provisões e sinais)
@@ -147,3 +147,94 @@ número plausível e errado — a pior saída possível num sistema de decisão.
 
 **Custo aceito.** Mais caminhos `null` para tratar; em compensação todo `null` carrega a
 explicação de por que é `null`.
+
+---
+
+# Onda 2 — decisões da experiência
+
+## 13. Payload injetado no HTML, sem endpoint chamável
+
+**Decisão.** O painel recebe todo o conteúdo embutido no HTML (marcador
+`/*__PAINEL__*/null` substituído no servidor). Não existe `google.script.run`,
+nem endpoint de leitura, nem chamada de rede na página.
+
+**Porquê.** Elimina uma classe inteira de risco: sem endpoint, não há como
+alguém chamar o servidor a partir do navegador, e o histórico completo cabe no
+payload (são poucos fechamentos). A CSP com `connect-src 'none'` torna a
+ausência de rede verificável, não apenas prometida.
+
+**Custo aceito.** Trocar de competência recarrega a página em vez de buscar dado.
+
+## 14. Painel como diálogo na planilha, não como web app
+
+**Decisão.** `fosAbrirPainel` abre o HTML em modal dentro do Sheets.
+`doGet` existe, verifica que usuário efetivo e ativo são o mesmo, mas nada é
+implantado.
+
+**Porquê.** Publicar web app criaria uma superfície pública para dado
+financeiro pessoal. O modal já entrega a leitura para quem tem acesso à
+planilha, que é exatamente o público desejado.
+
+**Reversível.** Se um dia fizer sentido acessar pelo celular fora do Sheets,
+basta implantar — o `doGet` já nasce restrito.
+
+## 15. Abas visíveis como projeção regenerável
+
+**Decisão.** As quatro abas visíveis são reescritas inteiras a cada
+atualização, a partir do fechamento vigente.
+
+**Porquê.** Elas não podem virar segunda fonte de verdade. Regenerar tudo é o
+que garante que apagá-las não perde nada e que não existe estado escondido nelas.
+
+**Custo aceito.** Filtros e ordenações manuais do usuário se perdem na
+regeneração. Em troca, a aba nunca mente.
+
+## 16. Falta de candidato na conciliação não vira item de fila
+
+**Decisão.** Só ambiguidade (dois ou mais candidatos) gera item na fila.
+Evento sem contrapartida fica como pendência reportada.
+
+**Porquê.** Descoberto na integração: um evento de fevereiro sem extrato
+importado criava item de fila e travava o fechamento de **janeiro**. Quem cobra
+conciliação é a invariante do fechamento, que é escopada por competência.
+A fila fica só com o que exige decisão humana de verdade.
+
+## 17. Linha sem regra entra no ledger na resolução da fila
+
+**Decisão.** Quando nenhuma regra classifica uma linha, ela fica só no staging
+e na fila. Ao resolver o item, a linha entra no ledger como versão 1 com a
+categoria escolhida pelo usuário.
+
+**Porquê.** Descoberto ao ligar o fluxo: não havia caminho do staging para o
+ledger sem regra. Colocar a linha no ledger "sem categoria" violaria a
+invariante de soma por categoria; deixá-la fora até a decisão é coerente, e o
+fechamento fica bloqueado enquanto houver item aberto.
+
+## 18. Token de atenção só como acento
+
+**Decisão.** `#B8791A` é usado em borda e faixa, nunca como cor de texto.
+
+**Porquê.** Medido no teste: 3,63:1 sobre branco, abaixo de AA para texto
+pequeno. O token é canônico e não foi alterado; mudou o **uso**. Há teste que
+falha se alguém escrever `color:var(--atencao)`.
+
+## 19. Cache de taxa dentro da aba 00
+
+**Decisão.** As taxas materializadas vivem em `00_CONFIG_PARAMETROS` com
+`secao = TAXA` e chave `PAR@DATA`, em vez de uma nova aba.
+
+**Porquê.** A lista de abas internas é canônica e fechada. Guardar o cache na
+configuração mantém as treze abas e deixa a taxa visível e auditável onde já
+moram os outros parâmetros.
+
+**Custo aceito.** A aba 00 mistura parâmetro e cache; a coluna `secao` separa.
+
+## 20. Testes visuais estruturais, navegador só no QA opcional
+
+**Decisão.** C37–C39 são verificados lendo o HTML/CSS (tokens, contraste
+calculado, semântica, foco, breakpoints). A medição em navegador real fica em
+`npm run qa:visual`, fora de `npm test`.
+
+**Porquê.** Manter `npm test` sem dependência de binário externo, e ainda assim
+falhar de verdade quando o contrato visual é quebrado. O QA em Chromium mede o
+que só o navegador sabe: overflow real, ordem de foco e contraste computado.
