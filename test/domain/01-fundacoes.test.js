@@ -15,6 +15,38 @@ describe('Hash determinístico', () => {
     assert.notEqual(FOS.Hash.hashParts(['AB', 'C']), FOS.Hash.hashParts(['A', 'BC']));
   });
 
+  it('bate com os vetores oficiais do FNV-1a 64', { scenario: 'C04' }, () => {
+    // Referência externa: sem isso o hash seria só "o que o código faz hoje".
+    const vetores = [
+      ['', 'cbf29ce484222325'],
+      ['a', 'af63dc4c8601ec8c'],
+      ['b', 'af63df4c8601f1a5'],
+      ['c', 'af63de4c8601eff2'],
+      ['foobar', '85944171f73967e8'],
+      ['chongo was here!\n', '46810940eff5f915']
+    ];
+    vetores.forEach(([entrada, esperado]) => {
+      assert.equal(FOS.Hash.fnv1a64(entrada), esperado, 'vetor oficial: ' + JSON.stringify(entrada));
+    });
+  });
+
+  it('não depende de BigInt (não garantido no Apps Script)', { scenario: 'C04' }, () => {
+    const bruto = require('fs').readFileSync(
+      require('path').join(__dirname, '..', '..', 'src', 'domain', 'hash.js'), 'utf8'
+    );
+    // A menção em comentário é intencional (explica a decisão); o que não pode
+    // é o código usar BigInt.
+    const codigo = bruto.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map((l) => l.replace(/(^|\s)\/\/.*$/, '')).join('\n');
+    assert.equal(codigo.indexOf('BigInt'), -1, 'hash não pode depender de BigInt');
+  });
+
+  it('trata acento e emoji como bytes UTF-8', { scenario: 'C04' }, () => {
+    assert.deep(FOS.Hash.bytesUtf8('á'), [195, 161]);
+    assert.deep(FOS.Hash.bytesUtf8('\u{1F600}'), [240, 159, 152, 128]);
+    assert.notEqual(FOS.Hash.fnv1a64('acao'), FOS.Hash.fnv1a64('ação'));
+  });
+
   it('devolve 16 caracteres hexadecimais', () => {
     assert.ok(/^[0-9a-f]{16}$/.test(FOS.Hash.fnv1a64('x')));
   });

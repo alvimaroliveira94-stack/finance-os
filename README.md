@@ -172,6 +172,8 @@ Patrimônio → Histórico.
 ## Comandos
 
 ```bash
+npm run check            # verificação estática: sintaxe, JSON, API de Node em src/, bundle
+npm run build            # gera dist/financeos.gs (arquivo único para o Apps Script)
 npm test                 # roda tudo e imprime a matriz dos cenários canônicos
 npm run test:domain      # só testes de domínio
 npm run test:integration # só testes de integração (com fakes de plataforma)
@@ -183,7 +185,8 @@ node tools/seed.js regras   # TSV das regras sintéticas, para colar na aba 20
 ```
 
 O harness não tem dependência externa: só Node 18+.
-`npm test` falha se algum cenário canônico obrigatório ficar sem teste.
+`npm test` falha se algum cenário canônico obrigatório ficar sem teste e se
+`dist/financeos.gs` estiver dessincronizado de `src/`.
 
 `npm run qa:visual` é opcional e usa o Chromium local (defina `CHROME_PATH` se
 necessário). Ele só abre os previews sintéticos — nunca dado real.
@@ -199,16 +202,34 @@ Não há `npm install`: o projeto é dependência-zero de propósito.
 
 ## Setup no Google (manual, sem deploy automatizado)
 
+O projeto do Apps Script precisa de **três coisas**, nada mais:
+
 1. Crie uma planilha e abra **Extensões → Apps Script**.
-2. Cole os arquivos de `src/` no projeto de script (domínio, adaptadores, app e `main.js`)
-   e o conteúdo de `src/appsscript.json` no manifesto.
-3. Cole `src/ui/dashboard.html` como um arquivo HTML chamado `dashboard`.
-4. Recarregue a planilha e use o menu **Finance OS → Preparar planilha**.
-5. Ajuste `00_CONFIG_PARAMETROS`: contas reais, saldo inicial do caixa de vida e parâmetros.
+2. Rode `npm run build` e cole **`dist/financeos.gs`** como um único arquivo de script.
+   > Não cole os arquivos de `src/` um a um. No Apps Script o código global roda na
+   > ordem em que os arquivos aparecem no editor, e vários módulos leem
+   > `FOS.Constants` durante a carga: fora da ordem canônica o projeto quebra com
+   > `TypeError` antes do primeiro clique. O arquivo único elimina esse risco.
+   > A ordem canônica está em `tools/ordem.js`, e há teste que prova que fora dela
+   > o carregamento falha.
+3. Crie um arquivo **HTML** chamado `dashboard` e cole `src/ui/dashboard.html`.
+4. Cole `src/appsscript.json` no manifesto e recarregue a planilha.
+5. Use o menu **Finance OS → Preparar planilha**.
+6. Ajuste `00_CONFIG_PARAMETROS`: contas reais, saldo inicial do caixa de vida e parâmetros.
    Parâmetros que você ainda não decidiu devem ficar com `status = BLOQUEADO` e um `reason` —
    o sistema respeita isso e devolve `null` em vez de inventar número.
-6. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
-7. Use **Revisar pendências**, **Registrar evento** e **Fechar mês**; depois **Abrir painel**.
+7. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
+8. Use **Revisar pendências**, **Registrar evento** e **Fechar mês**; depois **Abrir painel**.
+
+**Antes do primeiro fechamento com posição ou saldo em moeda estrangeira**, a taxa
+precisa existir na aba `00` (linhas com `secao = TAXA`, chave `BRL/GBP@AAAA-MM-DD`).
+Com a política padrão `MANUAL` você preenche essas linhas à mão. O fechamento é
+**offline por decisão**: ele lê a taxa materializada e nunca busca cotação sozinho.
+Sem taxa para a data exata, o mês não fecha e o motivo aparece no diagnóstico.
+
+Os meses fecham **em ordem cronológica**: o sistema recusa fechar um mês deixando
+um mês anterior com movimento ainda em aberto, porque o estado do ciclo depende de
+fechamentos consecutivos.
 
 O menu tem sete ações, em linguagem direta: Preparar planilha, Importar extrato,
 Revisar pendências, Registrar evento, Fechar mês, Abrir painel e Atualizar abas.
@@ -224,6 +245,8 @@ ainda menor, é possível trocar a leitura por colagem manual do CSV e remover `
 - O painel abre como diálogo dentro da planilha. `doGet` existe e só responde ao dono, mas **nada foi implantado**.
 - O provedor de taxa padrão é manual (taxas registradas na planilha). O provedor HTTP é parametrizado e testado com fake, sem nenhuma URL de produção configurada e sem nenhuma chamada real nesta entrega.
 - O painel é light-only no V1: não há tema escuro.
+- O fechamento nunca acessa a rede: cotação entra pelo cache da aba `00`.
+- `dist/financeos.gs` é gerado, não editado à mão: alterações vão em `src/` + `npm run build`.
 - Não existe simulador de cenários, projeção ou score em nenhuma superfície.
 
 ## Documentos

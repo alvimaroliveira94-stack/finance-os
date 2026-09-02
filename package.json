@@ -5,6 +5,8 @@
   "description": "Finance OS — Google Sheets + Apps Script com harness local de testes em Node",
   "type": "commonjs",
   "scripts": {
+    "build": "node tools/build.js",
+    "check": "node tools/check.js",
     "test": "node tools/test.js",
     "test:domain": "node tools/test.js --filter=domain",
     "test:integration": "node tools/test.js --filter=integration",

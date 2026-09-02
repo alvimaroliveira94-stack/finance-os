@@ -227,6 +227,17 @@
       };
     }
 
+    /**
+     * Provedor usado para LER taxa (fechamento, painel, diagnóstico).
+     * Ordem: override de teste -> tabela injetada -> cache da aba 00.
+     * Nunca é o provedor externo: leitura não faz rede.
+     */
+    function provedorDeLeitura(config) {
+      if (deps.provedorTaxa) return deps.provedorTaxa;
+      if (deps.taxas) return FOS.Adapters.provedorManual(deps.taxas);
+      return FOS.Adapters.provedorCache(repo.configLinhas());
+    }
+
     function montarContexto(competencia, versao, motivoVersao) {
       var config = repo.config();
       var range = FOS.Dates.competenciaRange(competencia);
@@ -242,7 +253,11 @@
         return p.moeda && p.moeda !== moedaGerencial;
       });
 
-      var provedor = deps.provedorTaxa || FOS.Adapters.provedorManual(deps.taxas || []);
+      // O fechamento NUNCA chama a rede: ele lê a taxa já materializada na
+      // aba 00 (cache). Buscar cotação é trabalho de atualizarCacheTaxas, que
+      // é uma ação separada e explícita. Assim reprocessar um mês antigo usa
+      // exatamente a taxa da época, e o fechamento é determinístico e offline.
+      var provedor = provedorDeLeitura(config);
       var taxa = FOS.Adapters.resolverTaxa(provedor, C.MOEDA.GBP, moedaGerencial, range.fim);
       var taxaAnterior = FOS.Adapters.resolverTaxa(
         provedor, C.MOEDA.GBP, moedaGerencial,
@@ -276,6 +291,29 @@
       };
     }
 
+    /**
+     * Competências com movimento no ledger, anteriores à informada, que ainda
+     * não foram fechadas. Só conta a partir de COMPETENCIA_INICIAL_CAIXA_VIDA,
+     * para que histórico importado de antes do início do sistema não bloqueie
+     * nada para sempre.
+     */
+    function competenciasAnterioresEmAberto(competencia) {
+      var config = repo.config();
+      var inicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value;
+      var fechadas = {};
+      competenciasFechadas().forEach(function (c) { fechadas[c] = true; });
+
+      var comMovimento = {};
+      FOS.Ledger.visaoCorrente(repo.ledger()).forEach(function (l) {
+        var comp = FOS.Dates.competenciaOf(String(l.data_origem));
+        if (comp >= String(competencia)) return;
+        if (inicial && comp < String(inicial)) return;
+        if (fechadas[comp]) return;
+        comMovimento[comp] = true;
+      });
+      return Object.keys(comMovimento).sort();
+    }
+
     /** Validação sem escrita: mostra o que impede o fechamento. */
     function revisarCompetencia(competencia) {
       var ctx = montarContexto(competencia);
@@ -295,6 +333,18 @@
       if (jaFechado.length) {
         FOS.Core.fail('COMPETENCIA_JA_FECHADA',
           'Competência já fechada: ' + competencia + '. Use restatement para corrigir.');
+      }
+
+      // Fechar fora de ordem quebra o significado de "fechamentos
+      // consecutivos" do estado do ciclo: o mês mais novo não enxergaria o
+      // mais antigo como histórico, e o mais antigo, fechado depois, também
+      // não corrigiria o que já foi congelado.
+      var pendentesAnteriores = competenciasAnterioresEmAberto(competencia);
+      if (pendentesAnteriores.length) {
+        FOS.Core.fail('COMPETENCIA_ANTERIOR_EM_ABERTO',
+          'Feche primeiro, em ordem: ' + pendentesAnteriores.join(', ')
+            + '. O estado do ciclo depende de fechamentos consecutivos.',
+          { competencia: competencia, pendentes: pendentesAnteriores });
       }
       var ctx = montarContexto(competencia, 1, 'FECHAMENTO_ORIGINAL');
       var resultado = FOS.Closing.fechar(ctx);
@@ -1228,6 +1278,8 @@
       classificarLinhas: classificarLinhas,
       // Onda 2
       competenciasFechadas: competenciasFechadas,
+      competenciasAnterioresEmAberto: competenciasAnterioresEmAberto,
+      provedorDeLeitura: provedorDeLeitura,
       reclassificarLinha: reclassificarLinha,
       classificarPendente: classificarPendente,
       resolverItemFila: resolverItemFila,

@@ -163,13 +163,28 @@
         return ordem;
       },
 
+      /**
+       * Reescreve a área de dados de uma aba de projeção.
+       * Escreve a partir da linha 2 explicitamente, sem depender de
+       * getLastRow() logo após o clearContent() — esse valor pode não ter
+       * sido reavaliado ainda e deixaria um buraco de linhas em branco.
+       */
       substituirTabela: function (nome, objetos) {
         var sheet = aba(nome);
         var headers = this.cabecalhos(nome);
-        if (sheet.getLastRow() > 1) {
-          sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).clearContent();
+        var ultima = sheet.getLastRow();
+        if (ultima > 1) {
+          sheet.getRange(2, 1, ultima - 1, headers.length).clearContent();
         }
-        return this.anexarLinhas(nome, objetos);
+        if (!objetos || !objetos.length) return 0;
+        var linhas = objetos.map(function (obj) {
+          return headers.map(function (h) {
+            var v = obj[h];
+            return v === undefined || v === null ? '' : v;
+          });
+        });
+        sheet.getRange(2, 1, linhas.length, headers.length).setValues(linhas);
+        return linhas.length;
       }
     };
   }

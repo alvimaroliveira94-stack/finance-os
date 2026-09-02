@@ -238,3 +238,58 @@ calculado, semântica, foco, breakpoints). A medição em navegador real fica em
 **Porquê.** Manter `npm test` sem dependência de binário externo, e ainda assim
 falhar de verdade quando o contrato visual é quebrado. O QA em Chromium mede o
 que só o navegador sabe: overflow real, ordem de foco e contraste computado.
+
+---
+
+# Auditoria final — decisões forçadas pelos achados
+
+## 21. Arquivo único gerado para o Apps Script
+
+**Decisão.** `npm run build` concatena `src/` na ordem canônica de
+`tools/ordem.js` e gera `dist/financeos.gs`, que é o que se cola no editor.
+
+**Porquê.** Medido na auditoria: colar os arquivos em ordem alfabética — o mais
+provável para quem cola um a um — quebra o carregamento com `TypeError`, porque
+vários módulos leem `FOS.Constants` em tempo de carga e o Apps Script executa o
+código global na ordem dos arquivos do editor. Um arquivo só elimina a classe
+inteira do problema, sem refatorar 40 módulos.
+
+**Custo aceito.** Um artefato gerado versionado no repositório. Mitigado por
+teste que falha quando o bundle está dessincronizado de `src/`.
+
+## 22. Hash sem BigInt
+
+**Decisão.** FNV-1a 64 reescrito em quatro limbs de 16 bits, sobre os bytes
+UTF-8 da entrada. Nada de `BigInt`.
+
+**Porquê.** O suporte a `BigInt` no Apps Script não é garantido, e uma
+divergência ali mudaria todo fingerprint e todo checksum — exatamente a
+identidade do sistema. A versão nova bate com os vetores oficiais do FNV-1a 64,
+o que dá uma referência externa em vez de "o que o código faz hoje".
+
+**Custo aceito.** Os hashes mudaram em relação à implementação anterior. Sem
+impacto real: não há planilha em produção, e nenhum teste dependia dos valores.
+
+## 23. Fechamento é offline
+
+**Decisão.** O fechamento lê a taxa materializada na aba `00` e nunca chama a
+rede, mesmo com a política `HTTP` configurada. Buscar cotação é ação separada
+(`atualizarCacheTaxas`).
+
+**Porquê.** A auditoria encontrou o oposto do desejado: em produção o
+fechamento não enxergava o cache e nenhum mês fecharia. Ao corrigir, ficou claro
+qual é a regra certa — fechamento determinístico e reprodutível, que reprocessa
+um mês antigo com a taxa da época, e não com a de hoje.
+
+## 24. Fechamento em ordem cronológica
+
+**Decisão.** `fecharCompetencia` recusa fechar um mês se existir mês anterior
+com movimento no ledger ainda aberto (a partir de `COMPETENCIA_INICIAL_CAIXA_VIDA`).
+
+**Porquê.** Fechar fora de ordem produzia dois fechamentos ambos com movimento
+`INICIAL`: o mês novo não via o antigo como histórico, e o antigo, fechado
+depois, não corrigia o que já fora congelado. Isso esvazia o significado
+canônico de "2 fechamentos consecutivos" para avanço de estado.
+
+**Custo aceito.** Menos liberdade para fechar meses avulsos. O parâmetro de
+competência inicial evita que histórico antigo importado bloqueie para sempre.
