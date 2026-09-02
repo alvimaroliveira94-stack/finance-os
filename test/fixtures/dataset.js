@@ -256,11 +256,11 @@ const TAXAS = [
 /**
  * Cria um workbook fake já com estrutura, configuração semeada e (opcional)
  * dados sintéticos carregados.
- * @param {{comDados?:boolean, taxas?:Array, agora?:string}} [opcoes]
+ * @param {{comDados?:boolean, taxas?:Array, agora?:string, datasComoDate?:boolean}} [opcoes]
  */
 function montarWorkbook(opcoes) {
   const opts = opcoes || {};
-  const planilha = planilhaFake();
+  const planilha = planilhaFake({ datasComoDate: opts.datasComoDate });
   const repositorio = FOS.App.criarRepositorio(planilha);
   const relogio = FOS.Adapters.relogioFixo(opts.agora || AGORA);
   const auditoria = FOS.App.criarAuditoria(repositorio, relogio, 'TESTE');

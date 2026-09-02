@@ -293,3 +293,28 @@ canônico de "2 fechamentos consecutivos" para avanço de estado.
 
 **Custo aceito.** Menos liberdade para fechar meses avulsos. O parâmetro de
 competência inicial evita que histórico antigo importado bloqueie para sempre.
+
+## 25. Datas do Sheets convertidas na fronteira do adaptador
+
+**Decisão.** `lerTabela()` converte todo valor `Date` vindo do Google Sheets
+para texto ISO antes de entregar ao domínio: `AAAA-MM-DD` quando a hora é
+zero, ISO completo com offset quando há hora. Números, textos e booleanos
+passam intactos. A conversão usa o fuso da planilha
+(`getSpreadsheetTimeZone()` + `Utilities.formatDate`), com fallback nos
+getters locais quando `Utilities` não está disponível.
+
+**Porquê.** Encontrado na implantação real: o Sheets devolve `Date` para toda
+célula formatada como data, e o domínio exige ISO. Resolver uma pendência
+falhava com `DATA_INVALIDA: Data inválida em campo: Tue Sep 01 2026 ...`.
+Converter em UTC não serve: em fuso positivo o dia anda para trás
+(meia-noite em Tóquio é 15:00 UTC do dia anterior), o que contaminaria
+competência, conciliação e fingerprint.
+
+**Por que na fronteira e não no domínio.** O domínio é puro e não deve
+conhecer o formato de nenhuma plataforma. Espalhar `if (é Date)` por dezenas
+de módulos seria a correção errada: a conversão acontece uma vez, no único
+lugar que fala com o Sheets.
+
+**Custo aceito.** Uma célula de texto que o Sheets já interpretou como data
+volta como ISO, não como o texto digitado. É o comportamento desejado para
+todos os campos de data do schema.

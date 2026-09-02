@@ -5,8 +5,25 @@
  */
 const FOS = require('../_load');
 
-/** Planilha em memória: tabelas nomeadas com cabeçalho na primeira linha. */
-function planilhaFake() {
+/**
+ * Simula o que o Google Sheets faz com uma string 'AAAA-MM-DD' gravada numa
+ * célula: interpreta como data e devolve um objeto Date na leitura.
+ * O Date é criado com o construtor local, que é o comportamento do Apps
+ * Script (o fuso do runtime é o do projeto).
+ */
+function comoCelulaDoSheets(valor) {
+  if (typeof valor !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(valor)) return valor;
+  const [ano, mes, dia] = valor.split('-').map(Number);
+  return new Date(ano, mes - 1, dia);
+}
+
+/**
+ * Planilha em memória: tabelas nomeadas com cabeçalho na primeira linha.
+ * @param {{datasComoDate?:boolean}} [opcoes] com datasComoDate a planilha
+ *   devolve Date onde houver data, como o Sheets real faz.
+ */
+function planilhaFake(opcoes) {
+  const opts = opcoes || {};
   const abas = {};
   const chamadas = [];
   const ocultas = {};
@@ -25,14 +42,21 @@ function planilhaFake() {
     },
     lerTabela(nome) {
       if (!abas[nome]) throw FOS.Core.DomainError('ABA_INEXISTENTE', 'Aba não encontrada: ' + nome);
-      return abas[nome].linhas.map((row) => FOS.Schema.toObject(abas[nome].headers, row));
+      return abas[nome].linhas.map((row) => FOS.Schema.toObject(
+        abas[nome].headers,
+        // Mesma normalização de fronteira do adaptador real.
+        row.map((celula) => FOS.Adapters.normalizarCelula(celula, {}))
+      ));
     },
     anexarLinhas(nome, objetos) {
       if (!objetos || !objetos.length) return 0;
       if (!abas[nome]) throw FOS.Core.DomainError('ABA_INEXISTENTE', 'Aba não encontrada: ' + nome);
       const headers = abas[nome].headers;
       objetos.forEach((obj) => {
-        abas[nome].linhas.push(headers.map((h) => (obj[h] === undefined || obj[h] === null ? '' : obj[h])));
+        abas[nome].linhas.push(headers.map((h) => {
+          const v = obj[h] === undefined || obj[h] === null ? '' : obj[h];
+          return opts.datasComoDate ? comoCelulaDoSheets(v) : v;
+        }));
       });
       return objetos.length;
     },
@@ -90,4 +114,4 @@ function urlFetchFake(respostas) {
   };
 }
 
-module.exports = { planilhaFake, driveFake, urlFetchFake };
+module.exports = { planilhaFake, driveFake, urlFetchFake, comoCelulaDoSheets };

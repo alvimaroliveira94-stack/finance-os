@@ -14,13 +14,70 @@
  *   protegerColunas(nome, c)  -> void  (origem imutável)
  *   ocultarAba(nome, oculta)  -> void
  *   notaAba(nome, texto)      -> void
+ *
+ * Fronteira de tipos: o Sheets devolve Date para toda célula formatada como
+ * data, e o domínio trabalha com texto ISO. A conversão acontece aqui, uma
+ * vez só, na leitura — ver normalizarCelula.
  */
 (function (root) {
   'use strict';
   var FOS = root.FOS = root.FOS || {};
   FOS.Adapters = FOS.Adapters || {};
 
-  function criar(spreadsheet) {
+  function ehData(valor) {
+    return Object.prototype.toString.call(valor) === '[object Date]';
+  }
+
+  function doisDigitos(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  /**
+   * Formatação de fallback, usada quando Utilities não está disponível.
+   * Usa os getters LOCAIS (não os UTC) de propósito: no Apps Script o fuso do
+   * runtime é o do projeto, que é o mesmo da planilha. Usar UTC deslocaria o
+   * dia para trás em qualquer fuso negativo — foi exatamente esse tipo de erro
+   * que motivou esta função existir.
+   */
+  function formatarDataLocal(data) {
+    return data.getFullYear() + '-' + doisDigitos(data.getMonth() + 1) + '-' + doisDigitos(data.getDate())
+      + 'T' + doisDigitos(data.getHours()) + ':' + doisDigitos(data.getMinutes())
+      + ':' + doisDigitos(data.getSeconds());
+  }
+
+  /**
+   * Converte um valor de célula para o que o domínio entende.
+   *
+   *  - Date com hora zerada  -> 'AAAA-MM-DD' (campo de data)
+   *  - Date com hora         -> ISO completo, preservando o instante (timestamp)
+   *  - Date inválida         -> '' (o domínio recusa com motivo, sem chutar dia)
+   *  - número, texto, booleano, vazio -> devolvidos intactos
+   *
+   * A conversão usa SEMPRE o fuso da planilha, nunca UTC: converter em UTC
+   * desloca o dia (2026-09-01 vira 2026-08-31 em fuso negativo) e contamina
+   * competência, conciliação e fingerprint.
+   */
+  function normalizarCelula(valor, ctx) {
+    if (!ehData(valor)) return valor;
+    if (isNaN(valor.getTime())) return '';
+    var opcoes = ctx || {};
+    var texto;
+    if (typeof opcoes.formatarData === 'function' && opcoes.fusoHorario) {
+      texto = opcoes.formatarData(valor, opcoes.fusoHorario, "yyyy-MM-dd'T'HH:mm:ssXXX");
+    } else {
+      texto = formatarDataLocal(valor);
+    }
+    var horaZerada = texto.slice(11, 19) === '00:00:00';
+    return horaZerada ? texto.slice(0, 10) : texto;
+  }
+
+  /**
+   * @param {Object} spreadsheet objeto Spreadsheet do Apps Script
+   * @param {{fusoHorario?:string, formatarData?:Function}} [opcoes]
+   *   injetáveis para manter o adaptador testável fora do Apps Script
+   */
+  function criar(spreadsheet, opcoes) {
+    var ctxData = opcoes || {};
     function aba(nome) {
       var sheet = spreadsheet.getSheetByName(nome);
       if (!sheet) FOS.Core.fail('ABA_INEXISTENTE', 'Aba não encontrada: ' + nome);
@@ -56,7 +113,9 @@
         if (linhas < 2 || colunas < 1) return [];
         var headers = sheet.getRange(1, 1, 1, colunas).getValues()[0].map(function (h) { return String(h); });
         return sheet.getRange(2, 1, linhas - 1, colunas).getValues().map(function (row) {
-          return FOS.Schema.toObject(headers, row);
+          return FOS.Schema.toObject(headers, row.map(function (celula) {
+            return normalizarCelula(celula, ctxData);
+          }));
         });
       },
 
@@ -190,12 +249,17 @@
   }
 
   FOS.Adapters.criarPlanilha = criar;
+  FOS.Adapters.normalizarCelula = normalizarCelula;
 
   /** Fábrica usada dentro do Apps Script (não executa no Node). */
   FOS.Adapters.planilhaAtiva = function () {
     if (typeof SpreadsheetApp === 'undefined') {
       FOS.Core.fail('SPREADSHEET_APP_INDISPONIVEL', 'SpreadsheetApp só existe no Apps Script');
     }
-    return criar(SpreadsheetApp.getActiveSpreadsheet());
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    return criar(ss, {
+      fusoHorario: ss.getSpreadsheetTimeZone(),
+      formatarData: typeof Utilities === 'undefined' ? null : Utilities.formatDate
+    });
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
