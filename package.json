@@ -1,0 +1,16 @@
+{
+  "name": "finance-os",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Finance OS — Google Sheets + Apps Script com harness local de testes em Node",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node tools/test.js",
+    "test:domain": "node tools/test.js --filter=domain",
+    "test:integration": "node tools/test.js --filter=integration",
+    "scenarios": "node tools/test.js --scenarios",
+    "seed": "node tools/seed.js"
+  },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED"
+}
