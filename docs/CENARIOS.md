@@ -55,6 +55,7 @@ HTML do painel; `npm run qa:visual` complementa medindo em Chromium headless.
 | C47 | Dashboard consome apenas o payload allowlisted | 2 (experiência) |
 | C48 | Painel restrito e sem endpoint mutável | 2 (experiência) |
 | C49 | Publicação manual da taxa da competência | 3 (operação) |
+| C50 | Evento manual inválido é recusado, nunca ignorado | 3 (operação) |
 
 Para ver a matriz com o resultado atual de cada cenário:
 

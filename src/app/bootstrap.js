@@ -92,6 +92,21 @@
   /** Abas internas que o usuário usa no dia a dia continuam visíveis. */
   var ABAS_INTERNAS_OPERACIONAIS = [A.CONFIG, A.EVENTOS_MANUAIS, A.SALDOS_TRADING, A.FILA_REVISAO];
 
+  /**
+   * Listas fechadas nas abas internas de digitação.
+   *
+   * O dropdown é conveniência, não fonte de verdade: os valores saem das
+   * mesmas constantes que o domínio usa para validar, então a planilha não
+   * tem como oferecer algo que `Events.validar` recusaria. E como colar
+   * valores por cima substitui a regra da célula no Sheets, a validação
+   * rígida continua sendo a do código — o dropdown só reduz a chance do erro.
+   */
+  var VALIDACOES_OPERACIONAIS = [
+    { aba: A.EVENTOS_MANUAIS, coluna: 'tipo_evento', valores: FOS.Events.tiposValidos() },
+    { aba: A.EVENTOS_MANUAIS, coluna: 'moeda', valores: C.values(C.MOEDA) },
+    { aba: A.EVENTOS_MANUAIS, coluna: 'status', valores: C.values(FOS.Events.STATUS_EVENTO) }
+  ];
+
   function criarEstrutura(planilha) {
     var criadas = [];
     ABAS_VISIVEIS.forEach(function (aba) {
@@ -119,6 +134,17 @@
       });
       return aba.nome;
     });
+  }
+
+  /**
+   * Aplica as listas fechadas nas abas internas de digitação.
+   * Idempotente: reaplicar a mesma regra não duplica nada.
+   */
+  function validarAbasOperacionais(planilha) {
+    if (!planilha.validarColunaPorLista) return [];
+    return VALIDACOES_OPERACIONAIS.filter(function (v) {
+      return planilha.validarColunaPorLista(v.aba, v.coluna, v.valores);
+    }).map(function (v) { return v.aba + '.' + v.coluna; });
   }
 
   /**
@@ -155,6 +181,7 @@
     var repositorio = deps.repositorio || FOS.App.criarRepositorio(planilha);
     var semeadas = semear(repositorio);
     var formatadas = formatarSuperficies(planilha);
+    var validadas = validarAbasOperacionais(planilha);
     var ordem = deps.organizar === false ? [] : organizarAbas(planilha);
 
     if (deps.auditoria) {
@@ -167,22 +194,28 @@
           abas: criadas.length,
           config_semeada: semeadas.config,
           regras_semeadas: semeadas.regras,
-          superficies_formatadas: formatadas.length
+          superficies_formatadas: formatadas.length,
+          colunas_validadas: validadas.length
         },
         resultado: 'OK',
         detalhe: 'Estrutura criada/verificada.'
       });
       deps.auditoria.persistir();
     }
-    return { abas: criadas, semeadas: semeadas, formatadas: formatadas, ordem: ordem };
+    return {
+      abas: criadas, semeadas: semeadas, formatadas: formatadas,
+      validadas: validadas, ordem: ordem
+    };
   }
 
   FOS.App.Bootstrap = {
     ABAS_VISIVEIS: ABAS_VISIVEIS,
     ABAS_INTERNAS_OCULTAS: ABAS_INTERNAS_OCULTAS,
     ABAS_INTERNAS_OPERACIONAIS: ABAS_INTERNAS_OPERACIONAIS,
+    VALIDACOES_OPERACIONAIS: VALIDACOES_OPERACIONAIS,
     criarEstrutura: criarEstrutura,
     formatarSuperficies: formatarSuperficies,
+    validarAbasOperacionais: validarAbasOperacionais,
     organizarAbas: organizarAbas,
     semear: semear,
     inicializar: inicializar

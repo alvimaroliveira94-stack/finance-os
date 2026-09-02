@@ -235,18 +235,61 @@ function fosReclassificarMovimentacao() {
   }
 }
 
+/**
+ * Junta os eventos recusados pelos dois caminhos (materialização e
+ * conciliação) numa lista só, sem repetir o mesmo evento_id.
+ *
+ * Um evento com tipo_evento inválido aparece nas duas listas; um com conta
+ * desconhecida, só na de conciliação. Antes, a caixa de diálogo mostrava
+ * apenas a primeira, que justamente não continha erro de tipo — e o usuário
+ * via "0 provisões criadas" sem saber que o sistema tinha recusado a linha.
+ */
+function _fosEventosRecusados(listas) {
+  var porId = {};
+  var ordem = [];
+  (listas || []).forEach(function (lista) {
+    (lista || []).forEach(function (item) {
+      var id = String(item.evento_id || '(sem evento_id)');
+      if (!porId[id]) {
+        porId[id] = {};
+        ordem.push(id);
+      }
+      (item.erros || []).forEach(function (erro) {
+        var texto = erro.codigo + (erro.detalhe ? ' (' + erro.detalhe + ')' : '');
+        porId[id][texto] = true;
+      });
+    });
+  });
+  return ordem.map(function (id) {
+    return { evento_id: id, erros: Object.keys(porId[id]) };
+  });
+}
+
 /** Registrar evento: materializa o que já foi declarado na aba 11. */
 function fosRegistrarEvento() {
   var amb = _fosAmbiente();
   var r = amb.workflows.materializarEventos();
   var conciliacao = amb.workflows.conciliarEventos();
-  _fosUi().alert('Registrar evento',
-    'Provisões criadas/atualizadas: ' + r.provisoes.length
-    + '\nObjetivos criados/atualizados: ' + r.objetivos.length
-    + '\nEventos de posição gerados: ' + r.posicoes.length
-    + '\nConciliações feitas: ' + conciliacao.conciliadas
-    + (r.invalidos.length ? '\n\nEventos com erro: ' + r.invalidos.length : ''),
-    _fosUi().ButtonSet.OK);
+  var recusados = _fosEventosRecusados([r.invalidos, conciliacao.eventosInvalidos]);
+
+  var linhas = [
+    'Provisões criadas/atualizadas: ' + r.provisoes.length,
+    'Objetivos criados/atualizados: ' + r.objetivos.length,
+    'Eventos de posição gerados: ' + r.posicoes.length,
+    'Conciliações feitas: ' + conciliacao.conciliadas
+  ];
+  if (recusados.length) {
+    linhas.push('');
+    linhas.push('Eventos recusados: ' + recusados.length);
+    recusados.slice(0, 10).forEach(function (e) {
+      linhas.push('- ' + e.evento_id + ': ' + e.erros.join('; '));
+    });
+    if (recusados.length > 10) linhas.push('- ... e mais ' + (recusados.length - 10) + '.');
+    linhas.push('');
+    linhas.push('Corrija as linhas na aba 11_EVENTOS_MANUAIS e rode este comando de novo. '
+      + 'Nada foi gravado por essas linhas.');
+  }
+  _fosUi().alert('Registrar evento', linhas.join('\n'), _fosUi().ButtonSet.OK);
 }
 
 /**

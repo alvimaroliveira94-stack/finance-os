@@ -66,6 +66,23 @@
   }
 
   /**
+   * Os tipos que o domínio aceita, na ordem do catálogo.
+   *
+   * É esta lista — e não uma cópia dela — que alimenta o dropdown da aba 11.
+   * Assim a conveniência da planilha não tem como divergir do que `validar`
+   * realmente aceita: se um tipo entrar ou sair do SPEC, a lista acompanha.
+   */
+  function tiposValidos() {
+    return C.values(T).filter(function (tipo) { return !!SPEC[tipo]; });
+  }
+
+  /** O tipo existe no catálogo? Usado para separar erro de digitação de tipo
+   *  válido que simplesmente não pertence a um fluxo. */
+  function tipoConhecido(tipo) {
+    return !!SPEC[String(tipo || '').toUpperCase()];
+  }
+
+  /**
    * Valida um evento manual contra o catálogo de contas.
    * @returns {{ok:boolean, erros:Array<{codigo:string,detalhe:string}>}}
    */
@@ -142,6 +159,8 @@
     STATUS_EVENTO: STATUS_EVENTO,
     SPEC: SPEC,
     spec: spec,
+    tiposValidos: tiposValidos,
+    tipoConhecido: tipoConhecido,
     validar: validar,
     expectativaConciliacao: expectativaConciliacao
   };

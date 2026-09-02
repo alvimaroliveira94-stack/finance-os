@@ -54,7 +54,7 @@ O domínio é **puro por contrato** e há teste automatizado que falha se algum 
 |---|---|
 | `00_CONFIG_PARAMETROS` | Parâmetros, catálogo de contas e enums. Parâmetro bloqueado devolve `null` + `reason`. |
 | `10_IMPORT_EXTRATO` | Staging atômico de CSV/OFX, só para contas pessoais elegíveis. |
-| `11_EVENTOS_MANUAIS` | Os sete tipos de evento declarados pelo usuário. |
+| `11_EVENTOS_MANUAIS` | Os sete tipos de evento declarados pelo usuário. `tipo_evento`, `moeda` e `status` têm lista fechada; um valor fora do catálogo é recusado com motivo, nunca ignorado. |
 | `12_SALDOS_TRADING_SEMANAL` | Somente saldos semanais do ecossistema de trading. |
 | `20_REGRAS_CLASSIFICACAO` | Regras determinísticas versionadas. |
 | `21_FILA_REVISAO` | Toda ambiguidade e baixa confiança. |
@@ -221,6 +221,14 @@ O projeto do Apps Script precisa de **três coisas**, nada mais:
 7. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
 8. Use **Revisar pendências** e **Registrar evento**; publique a cotação do mês em
    **Publicar taxa do mês**; então **Fechar mês** e **Abrir painel**.
+
+**Declarando eventos na aba `11`**: escolha `tipo_evento`, `moeda` e `status` pelas listas
+da própria célula — os valores saem das constantes que o domínio usa para validar, então a
+planilha nunca oferece algo que o sistema recusaria. O dropdown é conveniência, não fonte de
+verdade: colar valores por cima substitui a regra da célula no Sheets, e por isso a validação
+que vale continua sendo a do código. **Registrar evento** lista cada linha recusada com
+`evento_id` e motivo, e o diagnóstico avisa antes do fechamento — nenhuma linha é descartada
+em silêncio.
 
 **Antes do primeiro fechamento com posição ou saldo em moeda estrangeira**, publique
 a taxa pelo menu **Finance OS → Publicar taxa do mês**. Nunca edite as linhas de taxa

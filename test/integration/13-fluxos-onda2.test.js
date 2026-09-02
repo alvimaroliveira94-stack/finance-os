@@ -587,11 +587,35 @@ describe('Abas visíveis', () => {
     assert.notOk(planilha.abaEstaOculta(V.HOME));
   });
 
-  it('categoria em MOVIMENTAÇÕES é validada por lista fechada', { scenario: 'C46' }, () => {
+  it('as colunas de lista fechada são exatamente estas', { scenario: 'C46' }, () => {
     const ctx = dataset.montarWorkbook({ comDados: false });
     const validacoes = ctx.planilha.chamadasDe('validarColunaPorLista');
-    assert.equal(validacoes.length, 1);
-    assert.equal(validacoes[0].coluna, 'categoria');
-    assert.deep(validacoes[0].valores, C.values(C.CATEGORIA));
+    assert.deep(
+      validacoes.map((v) => v.nome + '.' + v.coluna),
+      [
+        V.MOVIMENTACOES + '.categoria',
+        A.EVENTOS_MANUAIS + '.tipo_evento',
+        A.EVENTOS_MANUAIS + '.moeda',
+        A.EVENTOS_MANUAIS + '.status'
+      ],
+      'lista fechada só onde o usuário digita: a superfície e a aba 11');
+  });
+
+  it('cada dropdown sai da constante que o domínio valida', { scenario: 'C46' }, () => {
+    // O dropdown é conveniência, não fonte de verdade. Se ele oferecesse um
+    // valor que Events.validar recusa, a planilha estaria mentindo.
+    const ctx = dataset.montarWorkbook({ comDados: false });
+    const porColuna = {};
+    ctx.planilha.chamadasDe('validarColunaPorLista').forEach((v) => {
+      porColuna[v.nome + '.' + v.coluna] = v.valores;
+    });
+    assert.deep(porColuna[V.MOVIMENTACOES + '.categoria'], C.values(C.CATEGORIA));
+    assert.deep(porColuna[A.EVENTOS_MANUAIS + '.tipo_evento'], C.values(C.TIPO_EVENTO));
+    assert.deep(porColuna[A.EVENTOS_MANUAIS + '.moeda'], C.values(C.MOEDA));
+    assert.deep(porColuna[A.EVENTOS_MANUAIS + '.status'], C.values(FOS.Events.STATUS_EVENTO));
+
+    porColuna[A.EVENTOS_MANUAIS + '.tipo_evento'].forEach((tipo) => {
+      assert.ok(FOS.Events.tipoConhecido(tipo), tipo + ' está no dropdown mas não no SPEC');
+    });
   });
 });

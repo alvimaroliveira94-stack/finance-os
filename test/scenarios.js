@@ -56,7 +56,8 @@ const CENARIOS = [
   { id: 'C46', nome: 'Abas visíveis geradas idempotentemente do modelo canônico' },
   { id: 'C47', nome: 'Dashboard consome apenas o payload allowlisted' },
   { id: 'C48', nome: 'Painel restrito e sem endpoint mutável' },
-  { id: 'C49', nome: 'Publicação manual da taxa da competência' }
+  { id: 'C49', nome: 'Publicação manual da taxa da competência' },
+  { id: 'C50', nome: 'Evento manual inválido é recusado, nunca ignorado' }
 ];
 
 module.exports = { CENARIOS };

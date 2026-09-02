@@ -760,6 +760,17 @@
       ]).forEach(function (evento) {
         var tipo = String(evento.tipo_evento || '').toUpperCase();
         if (String(evento.status || '') === FOS.Events.STATUS_EVENTO.CANCELADO) return;
+        // Tipo desconhecido nunca é "não é para materializar": é erro de
+        // declaração e precisa aparecer. Sem esta separação, um tipo_evento
+        // com acento ou espaço caía no mesmo `return` silencioso dos três
+        // tipos que legitimamente não materializam nada.
+        if (!FOS.Events.tipoConhecido(tipo)) {
+          invalidos.push({
+            evento_id: evento.evento_id,
+            erros: [{ codigo: 'TIPO_EVENTO_INVALIDO', detalhe: String(evento.tipo_evento) }]
+          });
+          return;
+        }
         if ([C.TIPO_EVENTO.NOVA_OBRIGACAO, C.TIPO_EVENTO.NOVO_OBJETIVO,
           C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO].indexOf(tipo) === -1) return;
 
@@ -1041,6 +1052,32 @@
           });
         }
       });
+
+      // Um evento declarado com campo inválido não materializa nada e não
+      // conciliaria: antes ele sumia em silêncio, agora aparece aqui.
+      var eventosInvalidos = [];
+      repo.eventos().forEach(function (e) {
+        if (String(e.status || '') === FOS.Events.STATUS_EVENTO.CANCELADO) return;
+        var v = FOS.Events.validar(e, config);
+        if (!v.ok) {
+          eventosInvalidos.push({
+            evento_id: String(e.evento_id || '(sem evento_id)'),
+            erros: v.erros
+          });
+        }
+      });
+      if (eventosInvalidos.length) {
+        avisos.push({
+          codigo: 'EVENTOS_MANUAIS_INVALIDOS',
+          chave: A.EVENTOS_MANUAIS,
+          reason: eventosInvalidos.map(function (i) {
+            return i.evento_id + ': ' + i.erros.map(function (e) { return e.codigo; }).join(', ');
+          }).join(' | '),
+          impacto: eventosInvalidos.length + ' evento(s) da aba ' + A.EVENTOS_MANUAIS
+            + ' não serão materializados nem conciliados enquanto tiverem esses erros.',
+          eventos: eventosInvalidos
+        });
+      }
 
       var contas = Object.keys(config.contas).map(function (k) { return config.contas[k]; });
       if (!contas.filter(function (c) { return FOS.Accounts.elegibilidadeImportacao(c).elegivel; }).length) {

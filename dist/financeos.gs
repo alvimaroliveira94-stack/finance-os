@@ -1780,6 +1780,23 @@
   }
 
   /**
+   * Os tipos que o domínio aceita, na ordem do catálogo.
+   *
+   * É esta lista — e não uma cópia dela — que alimenta o dropdown da aba 11.
+   * Assim a conveniência da planilha não tem como divergir do que `validar`
+   * realmente aceita: se um tipo entrar ou sair do SPEC, a lista acompanha.
+   */
+  function tiposValidos() {
+    return C.values(T).filter(function (tipo) { return !!SPEC[tipo]; });
+  }
+
+  /** O tipo existe no catálogo? Usado para separar erro de digitação de tipo
+   *  válido que simplesmente não pertence a um fluxo. */
+  function tipoConhecido(tipo) {
+    return !!SPEC[String(tipo || '').toUpperCase()];
+  }
+
+  /**
    * Valida um evento manual contra o catálogo de contas.
    * @returns {{ok:boolean, erros:Array<{codigo:string,detalhe:string}>}}
    */
@@ -1856,6 +1873,8 @@
     STATUS_EVENTO: STATUS_EVENTO,
     SPEC: SPEC,
     spec: spec,
+    tiposValidos: tiposValidos,
+    tipoConhecido: tipoConhecido,
     validar: validar,
     expectativaConciliacao: expectativaConciliacao
   };
@@ -5730,6 +5749,21 @@
   /** Abas internas que o usuário usa no dia a dia continuam visíveis. */
   var ABAS_INTERNAS_OPERACIONAIS = [A.CONFIG, A.EVENTOS_MANUAIS, A.SALDOS_TRADING, A.FILA_REVISAO];
 
+  /**
+   * Listas fechadas nas abas internas de digitação.
+   *
+   * O dropdown é conveniência, não fonte de verdade: os valores saem das
+   * mesmas constantes que o domínio usa para validar, então a planilha não
+   * tem como oferecer algo que `Events.validar` recusaria. E como colar
+   * valores por cima substitui a regra da célula no Sheets, a validação
+   * rígida continua sendo a do código — o dropdown só reduz a chance do erro.
+   */
+  var VALIDACOES_OPERACIONAIS = [
+    { aba: A.EVENTOS_MANUAIS, coluna: 'tipo_evento', valores: FOS.Events.tiposValidos() },
+    { aba: A.EVENTOS_MANUAIS, coluna: 'moeda', valores: C.values(C.MOEDA) },
+    { aba: A.EVENTOS_MANUAIS, coluna: 'status', valores: C.values(FOS.Events.STATUS_EVENTO) }
+  ];
+
   function criarEstrutura(planilha) {
     var criadas = [];
     ABAS_VISIVEIS.forEach(function (aba) {
@@ -5757,6 +5791,17 @@
       });
       return aba.nome;
     });
+  }
+
+  /**
+   * Aplica as listas fechadas nas abas internas de digitação.
+   * Idempotente: reaplicar a mesma regra não duplica nada.
+   */
+  function validarAbasOperacionais(planilha) {
+    if (!planilha.validarColunaPorLista) return [];
+    return VALIDACOES_OPERACIONAIS.filter(function (v) {
+      return planilha.validarColunaPorLista(v.aba, v.coluna, v.valores);
+    }).map(function (v) { return v.aba + '.' + v.coluna; });
   }
 
   /**
@@ -5793,6 +5838,7 @@
     var repositorio = deps.repositorio || FOS.App.criarRepositorio(planilha);
     var semeadas = semear(repositorio);
     var formatadas = formatarSuperficies(planilha);
+    var validadas = validarAbasOperacionais(planilha);
     var ordem = deps.organizar === false ? [] : organizarAbas(planilha);
 
     if (deps.auditoria) {
@@ -5805,22 +5851,28 @@
           abas: criadas.length,
           config_semeada: semeadas.config,
           regras_semeadas: semeadas.regras,
-          superficies_formatadas: formatadas.length
+          superficies_formatadas: formatadas.length,
+          colunas_validadas: validadas.length
         },
         resultado: 'OK',
         detalhe: 'Estrutura criada/verificada.'
       });
       deps.auditoria.persistir();
     }
-    return { abas: criadas, semeadas: semeadas, formatadas: formatadas, ordem: ordem };
+    return {
+      abas: criadas, semeadas: semeadas, formatadas: formatadas,
+      validadas: validadas, ordem: ordem
+    };
   }
 
   FOS.App.Bootstrap = {
     ABAS_VISIVEIS: ABAS_VISIVEIS,
     ABAS_INTERNAS_OCULTAS: ABAS_INTERNAS_OCULTAS,
     ABAS_INTERNAS_OPERACIONAIS: ABAS_INTERNAS_OPERACIONAIS,
+    VALIDACOES_OPERACIONAIS: VALIDACOES_OPERACIONAIS,
     criarEstrutura: criarEstrutura,
     formatarSuperficies: formatarSuperficies,
+    validarAbasOperacionais: validarAbasOperacionais,
     organizarAbas: organizarAbas,
     semear: semear,
     inicializar: inicializar
@@ -6590,6 +6642,17 @@
       ]).forEach(function (evento) {
         var tipo = String(evento.tipo_evento || '').toUpperCase();
         if (String(evento.status || '') === FOS.Events.STATUS_EVENTO.CANCELADO) return;
+        // Tipo desconhecido nunca é "não é para materializar": é erro de
+        // declaração e precisa aparecer. Sem esta separação, um tipo_evento
+        // com acento ou espaço caía no mesmo `return` silencioso dos três
+        // tipos que legitimamente não materializam nada.
+        if (!FOS.Events.tipoConhecido(tipo)) {
+          invalidos.push({
+            evento_id: evento.evento_id,
+            erros: [{ codigo: 'TIPO_EVENTO_INVALIDO', detalhe: String(evento.tipo_evento) }]
+          });
+          return;
+        }
         if ([C.TIPO_EVENTO.NOVA_OBRIGACAO, C.TIPO_EVENTO.NOVO_OBJETIVO,
           C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO].indexOf(tipo) === -1) return;
 
@@ -6871,6 +6934,32 @@
           });
         }
       });
+
+      // Um evento declarado com campo inválido não materializa nada e não
+      // conciliaria: antes ele sumia em silêncio, agora aparece aqui.
+      var eventosInvalidos = [];
+      repo.eventos().forEach(function (e) {
+        if (String(e.status || '') === FOS.Events.STATUS_EVENTO.CANCELADO) return;
+        var v = FOS.Events.validar(e, config);
+        if (!v.ok) {
+          eventosInvalidos.push({
+            evento_id: String(e.evento_id || '(sem evento_id)'),
+            erros: v.erros
+          });
+        }
+      });
+      if (eventosInvalidos.length) {
+        avisos.push({
+          codigo: 'EVENTOS_MANUAIS_INVALIDOS',
+          chave: A.EVENTOS_MANUAIS,
+          reason: eventosInvalidos.map(function (i) {
+            return i.evento_id + ': ' + i.erros.map(function (e) { return e.codigo; }).join(', ');
+          }).join(' | '),
+          impacto: eventosInvalidos.length + ' evento(s) da aba ' + A.EVENTOS_MANUAIS
+            + ' não serão materializados nem conciliados enquanto tiverem esses erros.',
+          eventos: eventosInvalidos
+        });
+      }
 
       var contas = Object.keys(config.contas).map(function (k) { return config.contas[k]; });
       if (!contas.filter(function (c) { return FOS.Accounts.elegibilidadeImportacao(c).elegivel; }).length) {
@@ -7591,18 +7680,61 @@ function fosReclassificarMovimentacao() {
   }
 }
 
+/**
+ * Junta os eventos recusados pelos dois caminhos (materialização e
+ * conciliação) numa lista só, sem repetir o mesmo evento_id.
+ *
+ * Um evento com tipo_evento inválido aparece nas duas listas; um com conta
+ * desconhecida, só na de conciliação. Antes, a caixa de diálogo mostrava
+ * apenas a primeira, que justamente não continha erro de tipo — e o usuário
+ * via "0 provisões criadas" sem saber que o sistema tinha recusado a linha.
+ */
+function _fosEventosRecusados(listas) {
+  var porId = {};
+  var ordem = [];
+  (listas || []).forEach(function (lista) {
+    (lista || []).forEach(function (item) {
+      var id = String(item.evento_id || '(sem evento_id)');
+      if (!porId[id]) {
+        porId[id] = {};
+        ordem.push(id);
+      }
+      (item.erros || []).forEach(function (erro) {
+        var texto = erro.codigo + (erro.detalhe ? ' (' + erro.detalhe + ')' : '');
+        porId[id][texto] = true;
+      });
+    });
+  });
+  return ordem.map(function (id) {
+    return { evento_id: id, erros: Object.keys(porId[id]) };
+  });
+}
+
 /** Registrar evento: materializa o que já foi declarado na aba 11. */
 function fosRegistrarEvento() {
   var amb = _fosAmbiente();
   var r = amb.workflows.materializarEventos();
   var conciliacao = amb.workflows.conciliarEventos();
-  _fosUi().alert('Registrar evento',
-    'Provisões criadas/atualizadas: ' + r.provisoes.length
-    + '\nObjetivos criados/atualizados: ' + r.objetivos.length
-    + '\nEventos de posição gerados: ' + r.posicoes.length
-    + '\nConciliações feitas: ' + conciliacao.conciliadas
-    + (r.invalidos.length ? '\n\nEventos com erro: ' + r.invalidos.length : ''),
-    _fosUi().ButtonSet.OK);
+  var recusados = _fosEventosRecusados([r.invalidos, conciliacao.eventosInvalidos]);
+
+  var linhas = [
+    'Provisões criadas/atualizadas: ' + r.provisoes.length,
+    'Objetivos criados/atualizados: ' + r.objetivos.length,
+    'Eventos de posição gerados: ' + r.posicoes.length,
+    'Conciliações feitas: ' + conciliacao.conciliadas
+  ];
+  if (recusados.length) {
+    linhas.push('');
+    linhas.push('Eventos recusados: ' + recusados.length);
+    recusados.slice(0, 10).forEach(function (e) {
+      linhas.push('- ' + e.evento_id + ': ' + e.erros.join('; '));
+    });
+    if (recusados.length > 10) linhas.push('- ... e mais ' + (recusados.length - 10) + '.');
+    linhas.push('');
+    linhas.push('Corrija as linhas na aba 11_EVENTOS_MANUAIS e rode este comando de novo. '
+      + 'Nada foi gravado por essas linhas.');
+  }
+  _fosUi().alert('Registrar evento', linhas.join('\n'), _fosUi().ButtonSet.OK);
 }
 
 /**
