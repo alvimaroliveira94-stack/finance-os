@@ -221,6 +221,9 @@ O projeto do Apps Script precisa de **três coisas**, nada mais:
    Linhas com `status = DEPRECIADO` são parâmetros que deixaram de ser canônicos: o sistema
    não os lê mais e não os cobra. Ficam na aba como histórico; a lista está em
    `FOS.Config.PARAMETROS_DEPRECIADOS`, e é ela que manda, não a célula.
+   `URL_PROVEDOR_TAXA_CAMBIO` é caso à parte: fica bloqueada **por decisão**, porque
+   `POLITICA_TAXA_CAMBIO = MANUAL` e o V1 não consulta ninguém. O diagnóstico só volta a
+   cobrá-la se a política mudar para `HTTP`.
 7. Importe extratos pelo menu, registre eventos manuais na aba `11` e saldos semanais na aba `12`.
 8. Use **Revisar pendências** e **Registrar evento**; publique a cotação do mês em
    **Publicar taxa do mês**; então **Fechar mês** e **Abrir painel**.

@@ -5328,17 +5328,37 @@
     };
   }
 
+  var PARAM_POLITICA = 'POLITICA_TAXA_CAMBIO';
+  var PARAM_URL = 'URL_PROVEDOR_TAXA_CAMBIO';
+  var POLITICA_HTTP = 'HTTP';
+  var POLITICA_MANUAL = 'MANUAL';
+
+  /** Política de taxa vigente na aba 00. MANUAL é o padrão do V1. */
+  function politicaDeTaxa(config) {
+    return String(config.param(PARAM_POLITICA).value || POLITICA_MANUAL).toUpperCase();
+  }
+
+  /**
+   * A URL do provedor é exigida pela configuração atual?
+   *
+   * Sob política MANUAL a ausência dela é decisão tomada, não pendência: o
+   * V1 não consulta ninguém. Só sob HTTP a falta da URL é algo a resolver.
+   */
+  function exigeUrlDoProvedor(config) {
+    return politicaDeTaxa(config) === POLITICA_HTTP;
+  }
+
   /**
    * Provedor configurado a partir da aba 00 (política do usuário).
    * Política MANUAL é o padrão do V1: nenhuma chamada externa acontece.
    */
   function provedorConfigurado(config, configRows, deps) {
-    var politica = String(config.param('POLITICA_TAXA_CAMBIO').value || 'MANUAL').toUpperCase();
+    var politica = politicaDeTaxa(config);
     var cache = provedorCache(configRows);
     if (politica !== 'HTTP') {
       return { nome: politica === 'HTTP' ? 'HTTP' : 'MANUAL', primario: cache, externo: null, politica: politica };
     }
-    var url = config.param('URL_PROVEDOR_TAXA_CAMBIO').value;
+    var url = config.param(PARAM_URL).value;
     if (!url || !(deps && deps.urlFetchApp)) {
       return { nome: 'HTTP_INDISPONIVEL', primario: cache, externo: null, politica: politica };
     }
@@ -5387,6 +5407,10 @@
     };
   }
 
+  FOS.Adapters.PARAM_POLITICA_TAXA = PARAM_POLITICA;
+  FOS.Adapters.PARAM_URL_PROVEDOR_TAXA = PARAM_URL;
+  FOS.Adapters.politicaDeTaxa = politicaDeTaxa;
+  FOS.Adapters.exigeUrlDoProvedor = exigeUrlDoProvedor;
   FOS.Adapters.provedorManual = provedorManual;
   FOS.Adapters.provedorCache = provedorCache;
   FOS.Adapters.provedorHttp = provedorHttp;
@@ -7031,10 +7055,27 @@
         }
       });
 
+      // A URL do provedor de taxa só é pendência sob política HTTP. Sob
+      // MANUAL — o padrão do V1 — a ausência dela é decisão tomada, e cobrá-la
+      // seria pedir uma ação que não existe. O parâmetro continua no catálogo
+      // para quando a política mudar; ver Adapters.exigeUrlDoProvedor.
+      var exigeUrlTaxa = FOS.Adapters.exigeUrlDoProvedor(config);
+      if (exigeUrlTaxa && config.param(FOS.Adapters.PARAM_URL_PROVEDOR_TAXA).value === null) {
+        avisos.push({
+          codigo: 'URL_PROVEDOR_TAXA_AUSENTE',
+          chave: FOS.Adapters.PARAM_URL_PROVEDOR_TAXA,
+          reason: config.param(FOS.Adapters.PARAM_URL_PROVEDOR_TAXA).reason,
+          impacto: 'Não impede o fechamento. A política de câmbio está em HTTP, mas sem URL '
+            + 'nenhuma cotação é consultada: publique a taxa pelo menu Finance OS > '
+            + 'Publicar taxa do mês, ou volte a política para MANUAL.'
+        });
+      }
+
       // Parâmetro DEPRECIADO não entra aqui: a decisão sobre ele já foi
       // tomada, e cobrá-lo de novo seria pedir algo que o sistema não usa.
       Object.keys(config.parametros).forEach(function (chave) {
         var p = config.parametros[chave];
+        if (chave === FOS.Adapters.PARAM_URL_PROVEDOR_TAXA) return;
         if (p.status === C.STATUS_PARAMETRO.BLOQUEADO
           && !parametrosCriticos.some(function (c) { return c.chave === chave; })) {
           avisos.push({

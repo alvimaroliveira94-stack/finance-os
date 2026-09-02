@@ -358,14 +358,87 @@ describe('Diagnóstico de setup', () => {
     const ctx = dataset.montarWorkbook({ comDados: false });
     const diag = ctx.workflows.diagnosticoSetup();
     assert.ok(diag.pronto, 'a semente sintética já nasce pronta: ' + JSON.stringify(diag.bloqueios));
-    const avisos = diag.avisos.map((a) => a.chave);
-    assert.includes(avisos, 'URL_PROVEDOR_TAXA_CAMBIO');
-    diag.avisos.forEach((a) => assert.includes(a.impacto, 'Não impede'));
-    // A mensagem não pode afirmar que existem cálculos dependentes: só um dos
-    // parâmetros bloqueados tem consumidor, e ele depende da política HTTP.
-    diag.avisos.forEach((a) => assert.equal(
-      a.impacto.indexOf('os cálculos que dependem dele'), -1,
-      'aviso não deve prometer dependentes que podem não existir'));
+    // A semente não deixa pendência: todo parâmetro sem valor ou é decisão
+    // já tomada (política MANUAL) ou não existe mais.
+    assert.deep(diag.avisos, []);
+  });
+
+  it('um parâmetro bloqueado de verdade vira aviso sem prometer dependentes',
+    { scenario: 'C44' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false });
+      ctx.repositorio.anexar(A.CONFIG, [{
+        secao: 'PARAMETRO', chave: 'PARAMETRO_PENDENTE_QUALQUER', valor: '', tipo: 'NUMERO',
+        status: 'BLOQUEADO', reason: 'AGUARDANDO_DEFINICAO_DO_USUARIO', versao: 1
+      }]);
+      const aviso = ctx.workflows.diagnosticoSetup().avisos
+        .filter((a) => a.chave === 'PARAMETRO_PENDENTE_QUALQUER')[0];
+      assert.ok(aviso);
+      assert.equal(aviso.codigo, 'PARAMETRO_BLOQUEADO');
+      assert.includes(aviso.impacto, 'Não impede');
+      assert.equal(aviso.impacto.indexOf('os cálculos que dependem dele'), -1,
+        'aviso não deve prometer dependentes que podem não existir');
+    });
+
+  /** Reconfigura a política de câmbio como o usuário faria na aba 00. */
+  function comPolitica(politica, url) {
+    const ctx = dataset.montarWorkbook({ comDados: false });
+    ctx.repositorio.substituir(A.CONFIG, ctx.repositorio.configLinhas().map((r) => {
+      if (r.chave === 'POLITICA_TAXA_CAMBIO') return Object.assign({}, r, { valor: politica });
+      if (r.chave === 'URL_PROVEDOR_TAXA_CAMBIO' && url) {
+        return Object.assign({}, r, { valor: url, status: 'ATIVO', reason: '' });
+      }
+      return r;
+    }));
+    return ctx;
+  }
+
+  it('sob política MANUAL a URL do provedor não é pendência', { scenario: 'C44' }, () => {
+    // A decisão já foi tomada: o V1 não consulta ninguém. Cobrar a URL seria
+    // pedir uma ação que não existe.
+    const diag = comPolitica('MANUAL').workflows.diagnosticoSetup();
+    assert.deep(diag.avisos.map((a) => a.chave), []);
+    assert.ok(diag.pronto);
+  });
+
+  it('sob política HTTP a URL ausente volta a ser diagnosticada', { scenario: 'C44' }, () => {
+    const diag = comPolitica('HTTP').workflows.diagnosticoSetup();
+    const aviso = diag.avisos.filter((a) => a.codigo === 'URL_PROVEDOR_TAXA_AUSENTE')[0];
+    assert.ok(aviso, 'esperado aviso da URL sob política HTTP: ' + JSON.stringify(diag.avisos));
+    assert.equal(aviso.chave, 'URL_PROVEDOR_TAXA_CAMBIO');
+    assert.includes(aviso.impacto, 'HTTP');
+    assert.includes(aviso.impacto, 'Publicar taxa do mês');
+    assert.ok(diag.pronto, 'a falta da URL não impede fechar: a taxa pode ser publicada à mão');
+  });
+
+  it('sob política HTTP com URL configurada não há aviso', { scenario: 'C44' }, () => {
+    const diag = comPolitica('HTTP', 'https://exemplo.invalido/{data}').workflows.diagnosticoSetup();
+    assert.deep(diag.avisos.map((a) => a.chave), []);
+  });
+
+  it('o parâmetro continua no catálogo, pronto para a política futura', { scenario: 'C44' }, () => {
+    // Não foi depreciado nem ativado: só deixou de ser cobrado.
+    const ctx = dataset.montarWorkbook({ comDados: false });
+    const p = ctx.repositorio.config().param('URL_PROVEDOR_TAXA_CAMBIO');
+    assert.equal(p.status, C.STATUS_PARAMETRO.BLOQUEADO);
+    assert.equal(p.reason, 'POLITICA_MANUAL_NO_V1');
+    assert.notOk(FOS.Config.ehDepreciado('URL_PROVEDOR_TAXA_CAMBIO'));
+    assert.includes(FOS.App.Seed.configRows().map((r) => r.chave), 'URL_PROVEDOR_TAXA_CAMBIO');
+  });
+
+  it('exigeUrlDoProvedor segue a política, não o valor da célula', { scenario: 'C44' }, () => {
+    assert.notOk(FOS.Adapters.exigeUrlDoProvedor(comPolitica('MANUAL').repositorio.config()));
+    assert.ok(FOS.Adapters.exigeUrlDoProvedor(comPolitica('HTTP').repositorio.config()));
+    assert.equal(FOS.Adapters.politicaDeTaxa(comPolitica('MANUAL').repositorio.config()), 'MANUAL');
+  });
+
+  it('a política MANUAL segue offline mesmo sem aviso nenhum', { scenario: 'C44' }, () => {
+    // Silenciar o aviso não pode ter ligado rede em lugar nenhum.
+    const ctx = comPolitica('MANUAL');
+    const provedor = FOS.Adapters.provedorConfigurado(
+      ctx.repositorio.config(), ctx.repositorio.configLinhas(),
+      { urlFetchApp: urlFetchFake({}) });
+    assert.equal(provedor.politica, 'MANUAL');
+    assert.isNull(provedor.externo);
   });
 
   it('avalia também as invariantes da competência informada', { scenario: 'C44' }, () => {

@@ -115,6 +115,13 @@ describe('Parâmetros depreciados: deixam de ser pendência', () => {
     DEPRECIADOS.forEach((chave) => assert.equal(chaves.indexOf(chave), -1, chave));
   });
 
+  it('com a semente atual não sobra pendência nenhuma de configuração', { scenario: 'C51' }, () => {
+    const ctx = workbookDeProducao();
+    const diag = ctx.workflows.diagnosticoSetup();
+    assert.ok(diag.pronto, JSON.stringify(diag.bloqueios));
+    assert.deep(diag.avisos, [], 'nada mais a decidir: a política de câmbio é MANUAL por decisão');
+  });
+
   it('o aviso de parâmetro bloqueado não promete dependentes inexistentes',
     { scenario: 'C51' }, () => {
       const ctx = workbookDeProducao();
