@@ -230,6 +230,54 @@ corrompido por qualquer via que não seja o workflow normal (nunca deveria
 acontecer, mas a aba tecnicamente permite escrita direta) fecharia o mês em
 silêncio com um número errado.
 
+## 12. Ownership: o passivo só materializa depois da prova bancária
+
+**Decisão revisada.** Uma auditoria de rollout contra a planilha de
+produção (antes do primeiro `NOVO_PASSIVO` real) encontrou que
+`materializarEventos()` criava/versionava `33_PASSIVOS` a partir só da
+validação de forma do evento (`FOS.Events.validar`), sem checar se o
+crédito ou débito correspondente já existia, conciliado, em `22_LEDGER`.
+Um evento com dado errado, ou uma conciliação ainda ambígua/sem candidato,
+produzia um passivo canônico — já deduzido do disponível — sem nenhuma
+prova de que o dinheiro se moveu. Corrigido: os três papéis são agora
+explícitos e nunca se confundem —
+
+| Papel | Dono | O que prova |
+|---|---|---|
+| Movimento bancário | `22_LEDGER` | O caixa que entrou/saiu, pelo extrato importado |
+| Vínculo | Evento manual (`11_EVENTOS_MANUAIS`) | A intenção humana de ligar um movimento a uma obrigação — declaração, não prova |
+| Obrigação | `33_PASSIVOS` | Só nasce/muda depois que o vínculo tem prova: uma linha corrente do ledger com `evento_conciliado_id` igual ao `evento_id` |
+
+Quarta guarda, no mesmo espírito das três do item 11 — mas na *entrada*,
+não na saída: `NOVO_PASSIVO` e `AMORTIZACAO_PASSIVO` recusam materializar
+(`PASSIVO_SEM_CONCILIACAO` / `AMORTIZACAO_SEM_CONCILIACAO`) enquanto não
+existir, na visão corrente de `22_LEDGER`, uma linha conciliada com o
+`evento_id`. Sem candidato, com candidato ambíguo, ou com dado do evento
+que nunca vai casar com o extrato: zero linhas em `33_PASSIVOS`, sempre —
+nunca parcial, nunca silencioso. Como nada é criado nesses casos, rodar o
+comando de novo depois que a conciliação for resolvida materializa
+normalmente, sem jamais esbarrar em `PASSIVO_JA_EXISTE`.
+
+**Onde isso muda o workflow, e por que só ali.** `fosRegistrarEvento`
+("Registrar evento") passa a chamar `conciliarEventos()` antes de
+`materializarEventos()` — a ordem inversa da usada até aqui — para que um
+crédito/débito que já está no ledger no momento do comando materialize no
+mesmo clique, sem exigir uma segunda execução. Essa inversão é local a
+este ponto de entrada, não uma regra geral: `conciliarEventos()` nunca
+escreve em `30_PROVISOES`/`31_OBJETIVOS`/`32_LEDGER_POSICOES`/`33_PASSIVOS`,
+e `materializarEventos()` nunca escreve em `22_LEDGER`/`21_FILA_REVISAO` —
+os dois não competem por nenhuma aba em comum, e nenhum dos outros sete
+tipos de evento manual depende de qual das duas funções roda primeiro.
+`fosImportarExtrato` já chamava as duas nesta mesma ordem.
+
+**Custo aceito.** O caso comum (extrato já importado e conciliável sem
+ambiguidade) continua em um clique. O caso em que a conciliação ainda não
+tem candidato — extrato do mês ainda não chegou, ou ambiguidade pendente
+na fila — passa a exigir rodar "Registrar evento" de novo depois de
+resolvida; antes desta correção, esse mesmo caso silenciosamente já criava
+o passivo, o que era exatamente o problema, não uma conveniência a
+preservar.
+
 ---
 
 ## Compatibilidade

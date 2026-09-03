@@ -18,11 +18,14 @@
  * fixture inteiramente inventado.
  */
 const { describe, it, assert } = globalThis.__fosTest;
+const fs = require('fs');
+const path = require('path');
 const FOS = require('../_load');
 const dataset = require('../fixtures/dataset');
 
 const C = FOS.Constants;
 const A = C.ABAS_INTERNAS;
+const MAIN = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'main.js'), 'utf8');
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -47,6 +50,16 @@ function resolverUnico(workflows, ctx, categoria) {
   assert.equal(abertos.length, 1, 'esperado exatamente um item aberto na fila');
   return workflows.resolverItemFila({
     item_id: abertos[0].item_id, decisao: 'CLASSIFICAR', categoria: categoria, ator: 'TESTE'
+  });
+}
+
+/** Resolve TODOS os itens de classificação abertos com a mesma categoria —
+ *  usado para colocar duas linhas de extrato no ledger antes de testar
+ *  ambiguidade de conciliação (a ambiguidade é entre linhas do LEDGER, e uma
+ *  linha só entra no ledger depois de classificada). */
+function resolverTodasClassificacoes(workflows, ctx, categoria) {
+  FOS.Queue.abertos(ctx.repositorio.fila()).forEach((item) => {
+    workflows.resolverItemFila({ item_id: item.item_id, decisao: 'CLASSIFICAR', categoria: categoria, ator: 'TESTE' });
   });
 }
 
@@ -81,8 +94,11 @@ function nascido() {
   })]);
   ctx.workflows.importarExtrato({ contaId: 'INTER_CC', nomeArquivo: 'jan.csv', conteudo: CSV_NASCIMENTO });
   resolverUnico(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
-  ctx.workflows.materializarEventos();
+  // Conciliar primeiro: NOVO_PASSIVO só materializa com o crédito já
+  // conciliado no ledger (portão de prova bancária). Mesma ordem de
+  // fosRegistrarEvento.
   ctx.workflows.conciliarEventos();
+  ctx.workflows.materializarEventos();
   return ctx;
 }
 
@@ -104,8 +120,10 @@ function comAmortizacaoParcial() {
   })]);
   wfFev.importarExtrato({ contaId: 'INTER_CC', nomeArquivo: 'fev.csv', conteudo: CSV_AMORTIZACAO_PARCIAL });
   resolverUnico(wfFev, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
-  wfFev.materializarEventos();
+  // Conciliar primeiro: AMORTIZACAO_PASSIVO só reduz o saldo com o débito já
+  // conciliado no ledger (mesmo portão de NOVO_PASSIVO).
   wfFev.conciliarEventos();
+  wfFev.materializarEventos();
   return { ctx, wfFev };
 }
 
@@ -276,12 +294,18 @@ describe('Passivo: nascimento com diferença retida na origem', () => {
 
   it('confiança 1,0 num empréstimo sem desconto também funciona: passivo = caixa',
     { scenario: 'C54' }, () => {
-      const ctx = dataset.montarWorkbook({ comDados: false });
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
       ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
         evento_id: 'EVP_SIMPLES', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
         conta_destino: 'INTER_CC', valor: 1000, vencimento: '2026-06-30', referencia_id: 'PAS_SIMPLES',
         credor: 'CREDOR SIMPLES', descricao: 'Emprestimo sem desconto'
       })]);
+      ctx.workflows.importarExtrato({
+        contaId: 'INTER_CC', nomeArquivo: 'jan.csv',
+        conteudo: 'data;descricao;valor\n10/01/2026;CREDITO EMPRESTIMO SIMPLES TESTE;1000,00'
+      });
+      resolverUnico(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
+      ctx.workflows.conciliarEventos();
       const r = ctx.workflows.materializarEventos();
       assert.equal(r.passivos.length, 1);
       assert.equal(Number(r.passivos[0].valor_devido_original), 1000);
@@ -388,8 +412,8 @@ describe('Passivo: amortização e saldo por competência', () => {
       })]);
       wfMar.importarExtrato({ contaId: 'INTER_CC', nomeArquivo: 'mar.csv', conteudo: CSV_AMORTIZACAO_FINAL });
       resolverUnico(wfMar, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
-      const r = wfMar.materializarEventos();
       wfMar.conciliarEventos();
+      const r = wfMar.materializarEventos();
 
       assert.equal(r.passivos.length, 1);
       const p = passivoCorrente(ctx);
@@ -494,8 +518,8 @@ describe('Passivo: impacto no fechamento', () => {
         conteudo: 'data;descricao;valor\n05/01/2026;CREDITO EMPRESTIMO VENCIDO TESTE;1000,00'
       });
       resolverUnico(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
-      ctx.workflows.materializarEventos();
       ctx.workflows.conciliarEventos();
+      ctx.workflows.materializarEventos();
       const r = ctx.workflows.fecharCompetencia('2026-01');
       assert.ok(r.validacao.ok, JSON.stringify(r.validacao.violacoes));
       const p = r.snapshot.passivos[0];
@@ -666,8 +690,8 @@ describe('Passivo × Provisão: exclusão mútua no nível que o modelo garante'
         conteudo: 'data;descricao;valor\n05/01/2026;CREDITO EMPRESTIMO SEPARADO TESTE;1000,00'
       });
       resolverUnico(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
-      ctx.workflows.materializarEventos();
       ctx.workflows.conciliarEventos();
+      ctx.workflows.materializarEventos();
       const r = ctx.workflows.fecharCompetencia('2026-01');
       assert.ok(r.validacao.ok, JSON.stringify(r.validacao.violacoes));
 
@@ -843,5 +867,225 @@ describe('Rollout brownfield: 11_EVENTOS_MANUAIS já populada', () => {
       assert.equal(JSON.stringify(lerEventosManuaisCru(ctx)), primeiraLeitura,
         'segunda execução não pode alterar nenhuma célula da aba 11');
       assert.equal(JSON.stringify(ctx.planilha.cabecalhos(A.EVENTOS_MANUAIS)), primeiroCabecalho);
+    });
+});
+
+/* ------------------------------------------------------------------ */
+/* Portão de conciliação: nenhuma mutação canônica em 33_PASSIVOS antes */
+/* da prova bancária (ADR 0008 §12)                                     */
+/* ------------------------------------------------------------------ */
+
+describe('Passivo: portão de conciliação — nascimento nunca antecipa o crédito', () => {
+  it('sem candidato algum no ledger: zero linhas em 33_PASSIVOS, recusa explícita',
+    { scenario: 'C54' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVP_SEM_CAND', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
+        conta_destino: 'INTER_CC', valor: 1000, vencimento: '2026-06-30', referencia_id: 'PAS_SEM_CAND',
+        credor: 'CREDOR SEM CANDIDATO', descricao: 'Emprestimo sem extrato importado'
+      })]);
+      // Nenhum extrato importado: não existe candidato algum no ledger.
+      ctx.workflows.conciliarEventos();
+      const r = ctx.workflows.materializarEventos();
+
+      assert.equal(r.passivos.length, 0, 'nenhum passivo nasce sem crédito conciliado');
+      assert.equal(ctx.repositorio.passivos().length, 0);
+      assert.equal(r.invalidos.length, 1);
+      assert.equal(r.invalidos[0].evento_id, 'EVP_SEM_CAND');
+      assert.equal(r.invalidos[0].erros[0].codigo, 'PASSIVO_SEM_CONCILIACAO');
+    });
+
+  it('conciliação ambígua (duas candidatas): zero linhas em 33_PASSIVOS enquanto não resolvida',
+    { scenario: 'C54' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVP_AMBIGUO', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-05',
+        conta_destino: 'INTER_CC', valor: 1000, vencimento: '2026-06-30', referencia_id: 'PAS_AMBIGUO',
+        credor: 'CREDOR AMBIGUO', descricao: 'Emprestimo com duas linhas candidatas'
+      })]);
+      ctx.workflows.importarExtrato({
+        contaId: 'INTER_CC', nomeArquivo: 'jan.csv',
+        conteudo: [
+          'data;descricao;valor',
+          '05/01/2026;CREDITO EMPRESTIMO AMBIGUO A;1000,00',
+          '06/01/2026;CREDITO EMPRESTIMO AMBIGUO B;1000,00'
+        ].join('\n')
+      });
+      // As duas linhas precisam entrar no ledger antes de a ambiguidade
+      // entre elas poder ser avaliada pela conciliação.
+      resolverTodasClassificacoes(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
+
+      const conciliacao = ctx.workflows.conciliarEventos();
+      assert.includes(conciliacao.pendentes.map((p) => p.motivo), 'AMBIGUIDADE_CONCILIACAO');
+      const r = ctx.workflows.materializarEventos();
+
+      assert.equal(r.passivos.length, 0, 'ambiguidade não é prova de conciliação — nenhum passivo nasce');
+      assert.equal(ctx.repositorio.passivos().length, 0);
+      assert.equal(r.invalidos[0].erros[0].codigo, 'PASSIVO_SEM_CONCILIACAO');
+    });
+
+  it('dado do evento com erro de digitação (valor não bate): nenhum passivo canônico nasce',
+    { scenario: 'C54' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVP_TYPO', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
+        conta_destino: 'INTER_CC', valor: 999.99, vencimento: '2026-06-30', referencia_id: 'PAS_TYPO',
+        credor: 'CREDOR TYPO', descricao: 'Valor digitado com erro (999,99 em vez de 1000)'
+      })]);
+      ctx.workflows.importarExtrato({
+        contaId: 'INTER_CC', nomeArquivo: 'jan.csv',
+        conteudo: 'data;descricao;valor\n10/01/2026;CREDITO EMPRESTIMO TYPO TESTE;1000,00'
+      });
+      resolverUnico(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
+      ctx.workflows.conciliarEventos();
+      const r = ctx.workflows.materializarEventos();
+
+      assert.equal(r.passivos.length, 0, 'valor declarado não bate com o extrato: nenhum candidato');
+      assert.equal(ctx.repositorio.passivos().length, 0);
+      assert.equal(r.invalidos[0].erros[0].codigo, 'PASSIVO_SEM_CONCILIACAO');
+    });
+
+  it('depois que a conciliação é resolvida, materializa uma única vez — nunca PASSIVO_JA_EXISTE',
+    { scenario: 'C54' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVP_TARDE', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
+        conta_destino: 'INTER_CC', valor: 1000, vencimento: '2026-06-30', referencia_id: 'PAS_TARDE',
+        credor: 'CREDOR TARDE', descricao: 'Extrato ainda não chegou'
+      })]);
+
+      // Primeira execução de "Registrar evento": extrato de janeiro ainda
+      // não foi importado. Nada é criado.
+      ctx.workflows.conciliarEventos();
+      const primeira = ctx.workflows.materializarEventos();
+      assert.equal(primeira.passivos.length, 0);
+      assert.equal(ctx.repositorio.passivos().length, 0);
+
+      // O extrato chega depois — o usuário roda "Registrar evento" de novo.
+      ctx.workflows.importarExtrato({
+        contaId: 'INTER_CC', nomeArquivo: 'jan.csv',
+        conteudo: 'data;descricao;valor\n10/01/2026;CREDITO EMPRESTIMO TARDE TESTE;1000,00'
+      });
+      resolverUnico(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
+      ctx.workflows.conciliarEventos();
+      const segunda = ctx.workflows.materializarEventos();
+
+      assert.equal(segunda.passivos.length, 1, 'agora existe candidato conciliado: materializa');
+      assert.equal(segunda.invalidos.length, 0, 'nunca PASSIVO_JA_EXISTE: nada tinha sido criado antes');
+      assert.equal(ctx.repositorio.passivos().length, 1);
+
+      // Rodar "Registrar evento" uma terceira vez (idempotência): não
+      // duplica nem reprocessa.
+      ctx.workflows.conciliarEventos();
+      const terceira = ctx.workflows.materializarEventos();
+      assert.equal(terceira.passivos.length, 0);
+      assert.deep(terceira.ignorados, [{ evento_id: 'EVP_TARDE', motivo: 'JA_MATERIALIZADO' }]);
+      assert.equal(ctx.repositorio.passivos().length, 1, 'sem duplicar');
+    });
+
+  it('AMORTIZACAO_PASSIVO sem débito conciliado: saldo intacto, nenhuma versão nova',
+    { scenario: 'C54' }, () => {
+      const ctx = nascido(); // passivo aberto = 4500
+      const wfFev = workflowsEm(ctx, '2026-02-15T12:00:00Z');
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVP_AMORT_SEM_DEB', tipo_evento: 'AMORTIZACAO_PASSIVO', data: '2026-02-15',
+        conta_origem: 'INTER_CC', valor: 2000, referencia_id: 'PAS_TESTE',
+        descricao: 'Amortizacao sem debito no extrato'
+      })]);
+      // Nenhum extrato de fevereiro importado: não há débito conciliado.
+      const antes = passivoCorrente(ctx);
+      wfFev.conciliarEventos();
+      const r = wfFev.materializarEventos();
+      const depois = passivoCorrente(ctx);
+
+      assert.equal(r.passivos.length, 0, 'nenhuma versão nova nasce sem débito conciliado');
+      assert.equal(r.invalidos[0].erros[0].codigo, 'AMORTIZACAO_SEM_CONCILIACAO');
+      assert.equal(Number(depois.valor_aberto), Number(antes.valor_aberto), 'saldo intacto');
+      assert.equal(Number(depois.versao), Number(antes.versao), 'nem sequer uma versão vazia é criada');
+    });
+
+  it('AMORTIZACAO_PASSIVO com débito ambíguo: saldo intacto até a ambiguidade ser resolvida',
+    { scenario: 'C54' }, () => {
+      const ctx = nascido(); // passivo aberto = 4500
+      const wfFev = workflowsEm(ctx, '2026-02-15T12:00:00Z');
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVP_AMORT_AMBIGUO', tipo_evento: 'AMORTIZACAO_PASSIVO', data: '2026-02-15',
+        conta_origem: 'INTER_CC', valor: 2000, referencia_id: 'PAS_TESTE',
+        descricao: 'Amortizacao com dois debitos candidatos'
+      })]);
+      wfFev.importarExtrato({
+        contaId: 'INTER_CC', nomeArquivo: 'fev.csv',
+        conteudo: [
+          'data;descricao;valor',
+          '15/02/2026;DEBITO QUITACAO AMBIGUA A;-2000,00',
+          '16/02/2026;DEBITO QUITACAO AMBIGUA B;-2000,00'
+        ].join('\n')
+      });
+      resolverTodasClassificacoes(wfFev, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
+
+      const antes = passivoCorrente(ctx);
+      const conciliacao = wfFev.conciliarEventos();
+      assert.includes(conciliacao.pendentes.map((p) => p.motivo), 'AMBIGUIDADE_CONCILIACAO');
+      const r = wfFev.materializarEventos();
+      const depois = passivoCorrente(ctx);
+
+      assert.equal(r.passivos.length, 0);
+      assert.equal(r.invalidos[0].erros[0].codigo, 'AMORTIZACAO_SEM_CONCILIACAO');
+      assert.equal(Number(depois.valor_aberto), Number(antes.valor_aberto));
+      assert.equal(Number(depois.versao), Number(antes.versao));
+    });
+
+  it('NOVA_OBRIGACAO, NOVO_OBJETIVO e posição materializam igual, com conciliarEventos rodando antes',
+    { scenario: 'C54' }, () => {
+      // O portão é exclusivo dos dois tipos de passivo. Prova que a nova
+      // ordem (conciliar antes de materializar) não muda nada para os
+      // outros tipos de evento manual.
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [
+        dataset.evento({
+          evento_id: 'EVN_OBR', tipo_evento: 'NOVA_OBRIGACAO', data: '2026-01-10',
+          valor: 3000, referencia_id: 'PROV_ORDEM', descricao: 'Provisao de controle'
+        }),
+        dataset.evento({
+          evento_id: 'EVN_OBJ', tipo_evento: 'NOVO_OBJETIVO', data: '2026-01-10',
+          valor: 20000, referencia_id: 'OBJ_ORDEM', descricao: 'Objetivo de controle'
+        }),
+        dataset.evento({
+          evento_id: 'EVN_POS', tipo_evento: 'APORTE_POSICAO', data: '2026-01-10',
+          conta_origem: 'INTER_CC', valor: 1500, referencia_id: 'POS_ORDEM'
+        })
+      ]);
+
+      ctx.workflows.conciliarEventos();
+      const r = ctx.workflows.materializarEventos();
+
+      assert.equal(r.invalidos.length, 0, JSON.stringify(r.invalidos));
+      assert.equal(r.provisoes.length, 1);
+      assert.equal(r.objetivos.length, 1);
+      assert.equal(r.posicoes.length, 1);
+      assert.equal(Number(r.provisoes[0].valor_alvo), 3000);
+      assert.equal(Number(r.objetivos[0].valor_alvo), 20000);
+      assert.equal(Number(r.posicoes[0].valor), 1500);
+    });
+
+  it('Registrar evento: a ordem no código é sempre conciliar antes de materializar',
+    { scenario: 'C54' }, () => {
+      // Teste estrutural, não comportamental: lê o texto real de main.js e
+      // prova que a chamada a conciliarEventos() vem antes da chamada a
+      // materializarEventos() dentro de fosRegistrarEvento. Se alguém
+      // reverter para a ordem perigosa (materializar antes de conciliar),
+      // este teste — e só ele, dos testes de comportamento acima — detecta
+      // a regressão sem precisar rodar o comando de verdade.
+      const comando = MAIN.slice(
+        MAIN.indexOf('function fosRegistrarEvento'),
+        MAIN.indexOf('/**\n * Publicar taxa do mês')
+      );
+      const posConciliar = comando.indexOf('amb.workflows.conciliarEventos()');
+      const posMaterializar = comando.indexOf('amb.workflows.materializarEventos()');
+      assert.ok(posConciliar !== -1 && posMaterializar !== -1,
+        'as duas chamadas precisam existir dentro de fosRegistrarEvento');
+      assert.ok(posConciliar < posMaterializar,
+        'conciliarEventos() precisa rodar antes de materializarEventos() — '
+        + 'NOVO_PASSIVO/AMORTIZACAO_PASSIVO dependem da conciliação já ter acontecido');
     });
 });

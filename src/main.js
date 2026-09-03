@@ -642,11 +642,22 @@ function _fosEventosRecusados(listas) {
   });
 }
 
-/** Registrar evento: materializa o que já foi declarado na aba 11. */
+/** Registrar evento: concilia o que já foi declarado na aba 11 contra o
+ * ledger, e só então materializa.
+ *
+ * A ordem importa: NOVO_PASSIVO/AMORTIZACAO_PASSIVO só mutam 33_PASSIVOS
+ * quando já existe, em 22_LEDGER, uma linha conciliada com o evento_id
+ * (ADR 0008 §12) — a prova bancária, não a declaração sozinha. Rodar
+ * conciliarEventos() primeiro é o que permite um crédito/débito que já
+ * está no ledger materializar no mesmo clique; os outros tipos de evento
+ * (obrigação, objetivo, posição) não dependem da conciliação e não mudam
+ * de comportamento com esta ordem — é o mesmo par já usado em
+ * fosImportarExtrato.
+ */
 function fosRegistrarEvento() {
   var amb = _fosAmbiente();
-  var r = amb.workflows.materializarEventos();
   var conciliacao = amb.workflows.conciliarEventos();
+  var r = amb.workflows.materializarEventos();
   var recusados = _fosEventosRecusados([r.invalidos, conciliacao.eventosInvalidos]);
 
   var linhas = [

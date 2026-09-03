@@ -739,10 +739,21 @@
      *  NOVO_OBJETIVO       -> nova versão em 31_OBJETIVOS
      *  APORTE_POSICAO      -> evento APORTE em 32_LEDGER_POSICOES
      *  RETIRADA_POSICAO    -> evento RETIRADA em 32_LEDGER_POSICOES
-     *  NOVO_PASSIVO        -> v1 em 33_PASSIVOS
-     *  AMORTIZACAO_PASSIVO -> nova versão em 33_PASSIVOS, valor_aberto reduzido
+     *  NOVO_PASSIVO        -> v1 em 33_PASSIVOS, só com crédito já conciliado
+     *  AMORTIZACAO_PASSIVO -> nova versão em 33_PASSIVOS, só com débito já
+     *                         conciliado; valor_aberto reduzido
      * Idempotente: cada evento manual materializa no máximo uma vez, e a
      * origem do registro fica gravada em origem_evento_id / evento_id.
+     *
+     * NOVO_PASSIVO/AMORTIZACAO_PASSIVO são os únicos dois tipos gated pela
+     * conciliação: o evento é só a declaração humana que liga movimento e
+     * obrigação (ADR 0008 §12); a prova de que o movimento aconteceu é uma
+     * linha corrente de 22_LEDGER com evento_conciliado_id == evento_id.
+     * Sem ela, nada muta em 33_PASSIVOS — nem v1, nem nova versão — e o
+     * evento volta em `invalidos`, nunca em silêncio. Por isso o chamador
+     * (`fosRegistrarEvento`) roda `conciliarEventos()` antes desta função:
+     * só assim um crédito/débito que já existe no ledger no momento do
+     * comando materializa no mesmo clique, sem exigir uma segunda execução.
      */
     function materializarEventos() {
       var agora = relogio.agora();
@@ -752,6 +763,18 @@
       var objetivosLinhas = repo.objetivos();
       var posicoesLinhas = repo.posicoes();
       var passivosLinhas = repo.passivos();
+
+      // Prova bancária de passivo: só o ledger sabe se um evento_id já foi
+      // conciliado com uma linha real do extrato. Lida uma vez aqui — leitura
+      // pura, nenhuma escrita — e usada só pelos dois branches de passivo
+      // abaixo; nenhum outro tipo de evento manual depende disto.
+      var eventosComCreditoOuDebitoConciliado = {};
+      FOS.Ledger.visaoCorrente(repo.ledger()).forEach(function (l) {
+        if (l.evento_conciliado_id) eventosComCreditoOuDebitoConciliado[String(l.evento_conciliado_id)] = true;
+      });
+      function conciliadoComOLedger(eventoId) {
+        return !!eventosComCreditoOuDebitoConciliado[String(eventoId)];
+      }
 
       var provisoesNovas = [];
       var objetivosNovos = [];
@@ -880,6 +903,22 @@
             });
             return;
           }
+          // O evento é só a declaração humana. A prova de que o crédito
+          // aconteceu é a linha do ledger conciliada com este evento_id —
+          // sem ela, nenhuma linha nasce em 33_PASSIVOS. Portão simétrico
+          // ao de AMORTIZACAO_PASSIVO abaixo (ADR 0008 §12).
+          if (!conciliadoComOLedger(evento.evento_id)) {
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{
+                codigo: 'PASSIVO_SEM_CONCILIACAO',
+                detalhe: 'NOVO_PASSIVO exige uma linha corrente em ' + A.LEDGER
+                  + ' com evento_conciliado_id=' + evento.evento_id
+                  + ' antes de materializar — nenhum passivo foi criado'
+              }]
+            });
+            return;
+          }
           // valor_devido, quando informado, é a obrigação; vazio, a
           // obrigação é o próprio caixa recebido (empréstimo sem desconto).
           var valorDevidoInformado = FOS.Normalize.valor(evento.valor_devido);
@@ -933,6 +972,22 @@
               erros: [{
                 codigo: 'AMORTIZACAO_EXCEDE_SALDO',
                 detalhe: 'saldo_aberto=' + passivoAtual.valor_aberto + '; amortizacao=' + valor
+              }]
+            });
+            return;
+          }
+          // Mesmo portão do nascimento, espelhado para a baixa: o saldo só
+          // pode diminuir depois de existir, no ledger, um débito conciliado
+          // com este evento_id. Sem ele, não há prova de que o dinheiro saiu
+          // do banco — reduzir valor_aberto seria quitação fictícia.
+          if (!conciliadoComOLedger(evento.evento_id)) {
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{
+                codigo: 'AMORTIZACAO_SEM_CONCILIACAO',
+                detalhe: 'AMORTIZACAO_PASSIVO exige uma linha corrente em ' + A.LEDGER
+                  + ' com evento_conciliado_id=' + evento.evento_id
+                  + ' antes de reduzir o saldo — valor_aberto permanece intacto'
               }]
             });
             return;
