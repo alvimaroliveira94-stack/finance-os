@@ -10,9 +10,9 @@ para 30_PROVISOES/31_OBJETIVOS (`FOS.Subledger`), sem criar uma segunda.
 
 ## Contexto
 
-Um empréstimo real ficou aberto na data de um fechamento: R$ 4.430 entraram
-no banco, mas a obrigação assumida era de R$ 5.000 — R$ 570 de juro
-descontado na origem. Até este ADR, o Finance OS não tinha nenhuma entidade
+Um empréstimo real ficou aberto na data de um fechamento: o caixa recebido
+foi menor que a obrigação assumida — a diferença é juro descontado na
+origem. Até este ADR, o Finance OS não tinha nenhuma entidade
 capaz de representar "quanto ainda devo": `disponivel_brl` somaria o caixa
 recebido como se fosse livre, e `runway_meses` ficaria inflado por dinheiro
 que já tem dono.
@@ -75,8 +75,8 @@ caixa pago.
 **Decisão.** `custo = valor_devido_original − valor_recebido`. Calculado sob
 demanda (`Liabilities.custoRetidoNaOrigem`), nunca armazenado como campo, e
 **nunca uma linha do ledger**. Não há terceira movimentação porque nenhum
-banco moveu esse dinheiro — inventar uma linha para os R$ 570 seria mentir
-sobre o extrato.
+banco moveu esse dinheiro — inventar uma linha para o custo retido seria
+mentir sobre o extrato.
 
 **Como isso se garante estruturalmente, não só por convenção.** Toda linha
 do ledger nasce de `Ledger.novaLinha`, que exige uma linha de staging — e

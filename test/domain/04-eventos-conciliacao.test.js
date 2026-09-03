@@ -41,12 +41,12 @@ describe('Eventos manuais', () => {
       dataset.evento({ evento_id: 'E7', tipo_evento: 'RETIRADA_POSICAO', data: '2026-01-21', conta_destino: 'INTER_CC', valor: 500, referencia_id: 'POS_ETF' }),
       dataset.evento({
         evento_id: 'E8', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-22', conta_destino: 'INTER_CC',
-        valor: 4430, valor_devido: 5000, vencimento: '2026-04-30', referencia_id: 'PAS_X',
+        valor: 7200, valor_devido: 8000, vencimento: '2026-05-31', referencia_id: 'PAS_X',
         credor: 'CREDOR X'
       }),
       dataset.evento({
         evento_id: 'E9', tipo_evento: 'AMORTIZACAO_PASSIVO', data: '2026-01-23', conta_origem: 'INTER_CC',
-        valor: 5000, referencia_id: 'PAS_X'
+        valor: 8000, referencia_id: 'PAS_X'
       })
     ];
     casos.forEach((e) => {

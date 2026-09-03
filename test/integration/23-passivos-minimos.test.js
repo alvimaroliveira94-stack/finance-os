@@ -2,10 +2,10 @@
 /**
  * Passivo mínimo canônico (33_PASSIVOS).
  *
- * Nasceu de um caso real: um empréstimo de R$ 5.000 devidos, dos quais só
- * R$ 4.430 entraram no banco — a diferença é juro descontado na origem.
- * PASSIVO = quanto devo. A categoria neutra (MOVIMENTACAO_COM_TERCEIRO) diz
- * que o caixa se moveu; só a aba 33 sabe quanto ainda se deve.
+ * Nasceu de um caso real: um empréstimo cujo caixa recebido foi MENOR que a
+ * obrigação assumida — a diferença é juro descontado na origem. PASSIVO =
+ * quanto devo. A categoria neutra (MOVIMENTACAO_COM_TERCEIRO) diz que o
+ * caixa se moveu; só a aba 33 sabe quanto ainda se deve.
  *
  * Duas verdades, dois donos, nunca fundidos:
  *  - 22_LEDGER: o caixa que entrou (`valor`, conciliado com o extrato);
@@ -395,10 +395,11 @@ describe('Passivo: amortização e saldo por competência', () => {
       const p = passivoCorrente(ctx);
       assert.equal(Number(p.versao), 3);
       assert.equal(Number(p.valor_aberto), 0);
-      assert.equal(Number(p.valor_devido_original), 4500, 'o valor original permanece 4500, não 5000');
+      assert.equal(Number(p.valor_devido_original), 4500, 'o valor original nunca muda por amortização');
 
-      // Os 570/500 nunca voltam: a soma de tudo que saiu do banco para este
-      // passivo é 2000 + 2500 = 4500, nunca 5000.
+      // O custo retido na origem nunca volta: a soma de tudo que saiu do
+      // banco para este passivo é 2000 + 2500 = 4500 — exatamente o devido,
+      // nunca o que teria sido devido sem o desconto na origem.
       const linhasLedger = FOS.Ledger.visaoCorrente(ctx.repositorio.ledger())
         .filter((l) => l.categoria === 'MOVIMENTACAO_COM_TERCEIRO');
       const totalPago = FOS.Core.sum(
