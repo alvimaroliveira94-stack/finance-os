@@ -1556,6 +1556,59 @@
     }
 
     /**
+     * As dez regras de semente sintéticas, geradas por App.Seed para o
+     * sistema ter algo a classificar antes da primeira calibração real.
+     *
+     * Lista literal e fechada — não um prefixo, faixa ou padrão — porque a
+     * migração que a usa precisa ser auditável por inspeção: qualquer
+     * humano lendo o código vê exatamente o que será atingido, sem precisar
+     * confiar em uma regra de descoberta.
+     */
+    var REGRAS_SEMENTE = ['R001', 'R010', 'R011', 'R020', 'R021', 'R022', 'R030', 'R040', 'R050', 'R900'];
+
+    /**
+     * Preview, só leitura, do que a aposentadoria das regras de semente
+     * afetaria — para mostrar antes de pedir a confirmação.
+     *
+     * `classificacoes` conta linhas correntes do ledger com aquele
+     * regra_id: é a evidência de quanto uma regra sintética já influenciou
+     * dinheiro real, e é por isso que a mutação exige preview antes de pedir
+     * a palavra de confirmação.
+     */
+    function previewAposentadoriaSemente() {
+      var regras = repo.regras();
+      var correntes = FOS.Ledger.visaoCorrente(repo.ledger());
+      return REGRAS_SEMENTE.map(function (id) {
+        var linha = regras.filter(function (r) { return String(r.regra_id) === id; })[0];
+        return {
+          regra_id: id,
+          encontrada: !!linha,
+          valor_referencia: linha ? String(linha.valor_referencia) : null,
+          categoria: linha ? String(linha.categoria) : null,
+          ativo: linha ? FOS.Config.parseBool(linha.ativo) : null,
+          classificacoes: correntes.filter(function (l) { return String(l.regra_id) === id; }).length
+        };
+      });
+    }
+
+    /**
+     * Migração única: aposenta as dez regras de semente sintéticas.
+     *
+     * Delega inteiramente a desativarRegras — mesma preservação de linha,
+     * mesma idempotência, mesma auditoria — com os dez ids literais desta
+     * função e nenhum outro. Uma regra CAL-* nunca aparece em REGRAS_SEMENTE,
+     * logo não há caminho por onde esta função a alcance.
+     */
+    function aposentarRegrasDeSemente(params) {
+      var p = params || {};
+      return desativarRegras({
+        regraIds: REGRAS_SEMENTE.slice(),
+        motivo: 'APOSENTADA_REGRA_SEMENTE_SINTETICA',
+        ator: p.ator || ator
+      });
+    }
+
+    /**
      * Estado das taxas relevantes para uma competência.
      *
      * Reporta DUAS taxas de propósito: o fechamento precisa da taxa da
@@ -1961,6 +2014,8 @@
       aplicarRegraCalibrada: aplicarRegraCalibrada,
       reprocessarFila: reprocessarFila,
       desativarRegras: desativarRegras,
+      previewAposentadoriaSemente: previewAposentadoriaSemente,
+      aposentarRegrasDeSemente: aposentarRegrasDeSemente,
       publicarTaxaCambio: publicarTaxaCambio,
       taxasPublicadas: taxasPublicadas,
       painel: painel,
