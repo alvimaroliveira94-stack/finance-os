@@ -23,14 +23,14 @@ function linhaLedger(campos) {
 }
 
 describe('Eventos manuais', () => {
-  it('reconhece exatamente sete tipos', { scenario: 'C06' }, () => {
-    assert.equal(C.values(C.TIPO_EVENTO).length, 7);
+  it('reconhece exatamente nove tipos', { scenario: 'C06' }, () => {
+    assert.equal(C.values(C.TIPO_EVENTO).length, 9);
     C.values(C.TIPO_EVENTO).forEach((tipo) => {
       assert.ok(FOS.Events.spec(tipo), 'sem especificação para ' + tipo);
     });
   });
 
-  it('valida os sete tipos com dados coerentes', { scenario: 'C06' }, () => {
+  it('valida os nove tipos com dados coerentes', { scenario: 'C06' }, () => {
     const casos = [
       dataset.evento({ evento_id: 'E1', tipo_evento: 'SAQUE_TRADING', data: '2026-01-15', conta_origem: 'WISE', conta_destino: 'INTER_CC', valor: 6000, valor_origem_moeda: 1000, moeda_origem: 'GBP' }),
       dataset.evento({ evento_id: 'E2', tipo_evento: 'GASTO_EXTRAORDINARIO', data: '2026-01-16', conta_origem: 'INTER_CC', valor: 900 }),
@@ -38,7 +38,15 @@ describe('Eventos manuais', () => {
       dataset.evento({ evento_id: 'E4', tipo_evento: 'NOVA_OBRIGACAO', data: '2026-01-18', valor: 3000, referencia_id: 'PROV_X' }),
       dataset.evento({ evento_id: 'E5', tipo_evento: 'NOVO_OBJETIVO', data: '2026-01-19', valor: 20000, referencia_id: 'OBJ_X' }),
       dataset.evento({ evento_id: 'E6', tipo_evento: 'APORTE_POSICAO', data: '2026-01-20', conta_origem: 'INTER_CC', valor: 1500, referencia_id: 'POS_ETF' }),
-      dataset.evento({ evento_id: 'E7', tipo_evento: 'RETIRADA_POSICAO', data: '2026-01-21', conta_destino: 'INTER_CC', valor: 500, referencia_id: 'POS_ETF' })
+      dataset.evento({ evento_id: 'E7', tipo_evento: 'RETIRADA_POSICAO', data: '2026-01-21', conta_destino: 'INTER_CC', valor: 500, referencia_id: 'POS_ETF' }),
+      dataset.evento({
+        evento_id: 'E8', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-22', conta_destino: 'INTER_CC',
+        valor: 4430, valor_devido: 5000, vencimento: '2026-04-30', referencia_id: 'PAS_X'
+      }),
+      dataset.evento({
+        evento_id: 'E9', tipo_evento: 'AMORTIZACAO_PASSIVO', data: '2026-01-23', conta_origem: 'INTER_CC',
+        valor: 5000, referencia_id: 'PAS_X'
+      })
     ];
     casos.forEach((e) => {
       const r = FOS.Events.validar(e, config);

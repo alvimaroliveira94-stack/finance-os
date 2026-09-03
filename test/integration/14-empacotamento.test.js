@@ -77,7 +77,7 @@ describe('Arquivo único para o Apps Script', () => {
     const repositorio = FOS.App.criarRepositorio(planilha);
     const relogio = FOS.Adapters.relogioFixo('2026-03-05T12:00:00Z');
     FOS.App.Bootstrap.inicializar({ planilha, repositorio, organizar: false });
-    assert.equal(planilha.listarAbas().length, 17, '4 abas visíveis + 13 internas');
+    assert.equal(planilha.listarAbas().length, 18, '4 abas visíveis + 14 internas');
 
     const workflows = FOS.App.criarWorkflows({ repositorio, relogio, ator: 'BUNDLE' });
     const r = workflows.importarExtrato({

@@ -33,6 +33,7 @@
     'vida.custo_vida_medio_brl',
     'vida.disponivel_brl',
     'vida.runway_meses',
+    'vida.passivos_abertos_brl',
     'vida.funcoes_do_dinheiro',
     'trading.capital_gbp',
     'trading.metricas.caixa_retirado_brl',
@@ -117,6 +118,20 @@
     });
   }
 
+  function passivosPermitidos(snapshot) {
+    return (snapshot.passivos || []).map(function (p) {
+      return {
+        passivo_id: p.passivo_id,
+        nome: p.nome,
+        credor: p.credor,
+        status: p.status,
+        valor_devido_original: p.valor_devido_original,
+        valor_aberto: p.valor_aberto,
+        vencimento: p.vencimento
+      };
+    });
+  }
+
   function sinaisPermitidos(snapshot) {
     return (snapshot.sinais || []).map(function (s) {
       return { codigo: s.codigo, valor: s.valor, status: s.status, reason: s.reason };
@@ -151,6 +166,7 @@
     dados.patrimonio.posicoes = posicoesPermitidas(snapshot);
     dados.provisoes = provisoesPermitidas(snapshot);
     dados.objetivos = objetivosPermitidos(snapshot);
+    dados.passivos = passivosPermitidos(snapshot);
     dados.sinais = sinaisPermitidos(snapshot);
     dados.acoes = acoesPermitidas(snapshot);
     dados.somente_leitura = true;

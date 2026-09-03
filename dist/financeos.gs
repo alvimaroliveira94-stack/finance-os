@@ -386,6 +386,7 @@
     PROVISOES: '30_PROVISOES',
     OBJETIVOS: '31_OBJETIVOS',
     POSICOES: '32_LEDGER_POSICOES',
+    PASSIVOS: '33_PASSIVOS',
     FECHAMENTOS: '40_FECHAMENTOS',
     RESTATEMENTS: '41_RESTATEMENTS',
     LOG: '90_LOG_AUDITORIA'
@@ -404,7 +405,15 @@
     SALDO_SEMANAL: 'SALDO_SEMANAL'
   };
 
-  /** Categorias canônicas de classificação. */
+  /**
+   * Categorias canônicas de classificação.
+   *
+   * MOVIMENTACAO_COM_TERCEIRO: caixa que se move entre o usuário e um
+   * terceiro sem ser consumo, receita, trading, patrimônio nem transferência
+   * entre contas próprias. É a categoria de nascimento e quitação de um
+   * passivo (33_PASSIVOS é quem sabe quanto ainda se deve; a categoria só
+   * diz que o dinheiro se moveu).
+   */
   var CATEGORIA = {
     CUSTO_VIDA: 'CUSTO_VIDA',
     CUSTO_TRADING: 'CUSTO_TRADING',
@@ -412,10 +421,11 @@
     GASTO_EXTRAORDINARIO: 'GASTO_EXTRAORDINARIO',
     APORTE_EXTRAORDINARIO: 'APORTE_EXTRAORDINARIO',
     TRANSFERENCIA_INTERNA: 'TRANSFERENCIA_INTERNA',
-    PATRIMONIO_OBJETIVOS: 'PATRIMONIO_OBJETIVOS'
+    PATRIMONIO_OBJETIVOS: 'PATRIMONIO_OBJETIVOS',
+    MOVIMENTACAO_COM_TERCEIRO: 'MOVIMENTACAO_COM_TERCEIRO'
   };
 
-  /** Tipos de evento manual (aba 11). Exatamente sete. */
+  /** Tipos de evento manual (aba 11). Exatamente nove. */
   var TIPO_EVENTO = {
     SAQUE_TRADING: 'SAQUE_TRADING',
     GASTO_EXTRAORDINARIO: 'GASTO_EXTRAORDINARIO',
@@ -423,7 +433,9 @@
     NOVA_OBRIGACAO: 'NOVA_OBRIGACAO',
     NOVO_OBJETIVO: 'NOVO_OBJETIVO',
     APORTE_POSICAO: 'APORTE_POSICAO',
-    RETIRADA_POSICAO: 'RETIRADA_POSICAO'
+    RETIRADA_POSICAO: 'RETIRADA_POSICAO',
+    NOVO_PASSIVO: 'NOVO_PASSIVO',
+    AMORTIZACAO_PASSIVO: 'AMORTIZACAO_PASSIVO'
   };
 
   /** Tipos de evento do ledger de posições (aba 32). */
@@ -609,11 +621,20 @@
 
   SCHEMA[A.EVENTOS_MANUAIS] = {
     nome: A.EVENTOS_MANUAIS,
-    descricao: 'Os sete tipos de evento manual declarados pelo usuário.',
+    descricao: 'Os nove tipos de evento manual declarados pelo usuário.',
     chave: ['evento_id'],
     colunas: [
-      'evento_id', 'tipo_evento', 'data', 'conta_origem', 'conta_destino',
-      'valor', 'moeda', 'valor_origem_moeda', 'moeda_origem',
+      'evento_id', 'tipo_evento', 'data',
+      // vencimento é exclusivo de NOVO_PASSIVO: a data de quitação da
+      // obrigação, estruturalmente distinta de `data` (a data da
+      // movimentação bancária, usada na conciliação). Inativo/vazio em
+      // todo o resto do catálogo.
+      'vencimento',
+      'conta_origem', 'conta_destino',
+      // valor_devido é exclusivo de NOVO_PASSIVO: a obrigação total
+      // assumida, quando diferente do dinheiro efetivamente recebido
+      // (`valor`) — por exemplo, juros descontados na origem.
+      'valor', 'valor_devido', 'moeda', 'valor_origem_moeda', 'moeda_origem',
       'descricao', 'referencia_id', 'status',
       'fingerprint_conciliado', 'criado_em', 'criado_por', 'observacao'
     ]
@@ -695,6 +716,19 @@
     colunas: [
       'evento_id', 'posicao_id', 'tipo_evento', 'data', 'valor', 'moeda',
       'quantidade', 'compensa_evento_id', 'origem', 'criado_em', 'observacao'
+    ]
+  };
+
+  SCHEMA[A.PASSIVOS] = {
+    nome: A.PASSIVOS,
+    descricao: 'Subledger versionado de passivos (quanto se deve a terceiro). '
+      + 'Nasce de NOVO_PASSIVO, baixa por AMORTIZACAO_PASSIVO. Nunca editado à mão.',
+    chave: ['passivo_id', 'versao'],
+    colunas: [
+      'passivo_id', 'versao', 'nome', 'credor',
+      'valor_devido_original', 'valor_aberto', 'moeda', 'vencimento',
+      'origem_evento_id', 'vigente_desde', 'vigente_ate',
+      'criado_em', 'motivo_versao', 'observacao'
     ]
   };
 
@@ -1455,7 +1489,8 @@
     GASTO_EXTRAORDINARIO: C.UNIVERSO.VIDA,
     APORTE_EXTRAORDINARIO: C.UNIVERSO.TRADING,
     TRANSFERENCIA_INTERNA: C.UNIVERSO.VIDA,
-    PATRIMONIO_OBJETIVOS: C.UNIVERSO.PATRIMONIO
+    PATRIMONIO_OBJETIVOS: C.UNIVERSO.PATRIMONIO,
+    MOVIMENTACAO_COM_TERCEIRO: C.UNIVERSO.VIDA
   };
 
   var OPERADORES = {
@@ -2488,8 +2523,11 @@
    *  concilia          — precisa casar com linha do extrato
    *  sinalEsperado     — DEBITO (saída da conta de vida) ou CREDITO (entrada)
    *  contaConciliacao  — de qual campo sai a conta que aparece no extrato
-   *  exigeReferencia   — precisa de referencia_id (provisão/objetivo/posição)
+   *  exigeReferencia   — precisa de referencia_id (provisão/objetivo/posição/passivo)
    *  categoriaEsperada — categoria canônica correspondente no ledger
+   *  exigeVencimento   — precisa de `vencimento` ISO, distinto de `data`
+   *  usaValorDevido    — `valor_devido`, quando informado, é a obrigação
+   *                       total (pode divergir de `valor`, o caixa recebido)
    */
   var SPEC = {};
   SPEC[T.SAQUE_TRADING] = {
@@ -2526,6 +2564,24 @@
     concilia: true, sinalEsperado: 'CREDITO', contaConciliacao: 'conta_destino',
     exigeReferencia: true, categoriaEsperada: C.CATEGORIA.PATRIMONIO_OBJETIVOS,
     universoOrigem: C.UNIVERSO.PATRIMONIO, universoDestino: C.UNIVERSO.VIDA
+  };
+  // Nasce do dinheiro que entra no banco (valor), mas a obrigação que nasce
+  // junto pode valer mais (valor_devido) — juro descontado na origem, por
+  // exemplo. Sem conta_origem: a contraparte é externa (o credor), não uma
+  // conta do próprio catálogo.
+  SPEC[T.NOVO_PASSIVO] = {
+    concilia: true, sinalEsperado: 'CREDITO', contaConciliacao: 'conta_destino',
+    exigeReferencia: true, categoriaEsperada: C.CATEGORIA.MOVIMENTACAO_COM_TERCEIRO,
+    universoOrigem: null, universoDestino: C.UNIVERSO.VIDA,
+    exigeVencimento: true, usaValorDevido: true
+  };
+  // Quitação/amortização: reduz o saldo devedor pelo próprio `valor` pago.
+  // Não tem vencimento próprio — é o passivo referenciado que já o carrega.
+  SPEC[T.AMORTIZACAO_PASSIVO] = {
+    concilia: true, sinalEsperado: 'DEBITO', contaConciliacao: 'conta_origem',
+    exigeReferencia: true, categoriaEsperada: C.CATEGORIA.MOVIMENTACAO_COM_TERCEIRO,
+    universoOrigem: C.UNIVERSO.VIDA, universoDestino: null,
+    exigeVencimento: false, usaValorDevido: false
   };
 
   function spec(tipo) {
@@ -2572,6 +2628,23 @@
     }
     if (s.exigeReferencia && String(evento.referencia_id || '').trim() === '') {
       erros.push({ codigo: 'REFERENCIA_OBRIGATORIA', detalhe: tipo + ' exige referencia_id' });
+    }
+    // vencimento é estruturalmente distinto de `data`: `data` é a movimentação
+    // bancária (usada na conciliação), `vencimento` é quando a obrigação
+    // precisa estar quitada. Nunca extraído de texto livre.
+    if (s.exigeVencimento && !FOS.Dates.isIso(String(evento.vencimento || ''))) {
+      erros.push({ codigo: 'VENCIMENTO_INVALIDO', detalhe: String(evento.vencimento) });
+    }
+    if (s.usaValorDevido && String(evento.valor_devido || '').trim() !== '') {
+      var valorDevido = FOS.Normalize.valor(evento.valor_devido);
+      if (valorDevido === null || valorDevido <= 0) {
+        erros.push({ codigo: 'VALOR_DEVIDO_INVALIDO', detalhe: 'valor_devido deve ser positivo quando informado' });
+      } else if (valor !== null && valorDevido < valor) {
+        erros.push({
+          codigo: 'VALOR_DEVIDO_MENOR_QUE_RECEBIDO',
+          detalhe: 'valor_devido (' + valorDevido + ') não pode ser menor que o valor recebido (' + valor + ')'
+        });
+      }
     }
     // Universo PATRIMONIO não é conta: a contraparte é a posição (referencia_id).
     if (s.universoOrigem && s.universoOrigem !== C.UNIVERSO.PATRIMONIO) {
@@ -3028,6 +3101,91 @@
   }
 
   FOS.Objectives = { STATUS_OBJETIVO: STATUS_OBJETIVO, avaliar: avaliar };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+/* ===== src/domain/liabilities.js ===== */
+/**
+ * Passivos (aba 33) — subledger versionado de obrigação com terceiro.
+ *
+ * PASSIVO = quanto devo. Existe para o disponível não contar como livre um
+ * dinheiro que já tem dono. Nasce de NOVO_PASSIVO, baixa por
+ * AMORTIZACAO_PASSIVO — nunca editado à mão.
+ *
+ * Deliberadamente simples: sem ritmo, sem histórico de fechamentos, sem
+ * meses restantes. O MVP só precisa saber, em cada competência, quanto está
+ * em aberto e se já venceu — Provisions.avaliar resolve um problema mais
+ * rico (ritmo de acumulação) que o passivo não tem.
+ */
+(function (root) {
+  'use strict';
+  var FOS = root.FOS = root.FOS || {};
+
+  var STATUS = {
+    ABERTO: 'ABERTO',
+    VENCIDO: 'VENCIDO',
+    QUITADO: 'QUITADO'
+  };
+
+  /**
+   * @param {Object} passivo versão corrente
+   * @param {{dataReferencia:string}} contexto data do fechamento (ISO)
+   */
+  function avaliar(passivo, contexto) {
+    var original = Number(FOS.Config.parseNumber(passivo.valor_devido_original) || 0);
+    var aberto = Number(FOS.Config.parseNumber(passivo.valor_aberto) || 0);
+    var amortizado = FOS.Core.round2(original - aberto);
+
+    var status;
+    var motivo;
+    if (aberto <= 0) {
+      status = STATUS.QUITADO;
+      motivo = 'SALDO_ZERADO';
+    } else {
+      var vencido = passivo.vencimento && FOS.Dates.isIso(String(passivo.vencimento))
+        && FOS.Dates.diffDays(String(passivo.vencimento), contexto.dataReferencia) < 0;
+      if (vencido) {
+        status = STATUS.VENCIDO;
+        motivo = 'VENCIDO_E_ABERTO';
+      } else {
+        status = STATUS.ABERTO;
+        motivo = 'DENTRO_DO_PRAZO';
+      }
+    }
+
+    return {
+      passivo_id: passivo.passivo_id,
+      nome: passivo.nome,
+      credor: passivo.credor || '',
+      moeda: passivo.moeda || null,
+      valor_devido_original: original,
+      valor_aberto: aberto,
+      valor_amortizado: amortizado,
+      vencimento: passivo.vencimento || null,
+      status: status,
+      motivo: motivo
+    };
+  }
+
+  /** Soma do saldo em aberto — o termo que o disponível deduz integralmente. */
+  function totalAberto(avaliacoes) {
+    return FOS.Core.sum(avaliacoes || [], function (p) { return Number(p.valor_aberto) || 0; });
+  }
+
+  /**
+   * Custo financeiro retido na origem — SEMPRE derivado, nunca armazenado
+   * nem lançado como movimentação. O ledger não tem (e não pode ter) uma
+   * linha para ele: nenhum banco moveu esse dinheiro.
+   */
+  function custoRetidoNaOrigem(valorDevidoOriginal, valorRecebido) {
+    return FOS.Core.round2(Number(valorDevidoOriginal) - Number(valorRecebido));
+  }
+
+  FOS.Liabilities = {
+    STATUS: STATUS,
+    avaliar: avaliar,
+    totalAberto: totalAberto,
+    custoRetidoNaOrigem: custoRetidoNaOrigem
+  };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 /* ===== src/domain/positions.js ===== */
@@ -3781,20 +3939,30 @@
   /**
    * Funções do dinheiro: para que serve cada real do caixa de vida.
    * PROTECAO = provisões acumuladas; OBJETIVOS = objetivos acumulados;
+   * PASSIVOS_ABERTOS = dívida com terceiro ainda não quitada, deduzida
+   * INTEGRALMENTE (não proporcional ao prazo: não é seu em nenhuma fração);
    * LIVRE = o que sobra (pode ser negativo, e isso é informação, não erro).
+   *
+   * @param {number} [passivosAbertoTotal] soma de valor_aberto dos passivos
+   *   vigentes na competência. Omitido (ou 0) quando não há passivo algum.
    */
-  function funcoesDoDinheiro(caixa, provisoes, objetivos) {
+  function funcoesDoDinheiro(caixa, provisoes, objetivos, passivosAbertoTotal) {
     if (!FOS.Core.isOk(caixa)) {
-      return { status: caixa.status, reason: caixa.reason, protecao: null, objetivos: null, livre: null, total: null };
+      return {
+        status: caixa.status, reason: caixa.reason,
+        protecao: null, objetivos: null, passivos_abertos: null, livre: null, total: null
+      };
     }
     var protecao = FOS.Core.sum(provisoes, function (p) { return Number(p.valor_acumulado) || 0; });
     var objetivo = FOS.Core.sum(objetivos, function (o) { return Number(o.valor_acumulado) || 0; });
+    var passivos = Number(passivosAbertoTotal) || 0;
     return {
       status: 'OK',
       reason: null,
       protecao: protecao,
       objetivos: objetivo,
-      livre: FOS.Core.round2(caixa.value - protecao - objetivo),
+      passivos_abertos: passivos,
+      livre: FOS.Core.round2(caixa.value - protecao - objetivo - passivos),
       total: caixa.value
     };
   }
@@ -4311,6 +4479,29 @@
       'total=' + total + '; por_categoria=' + porCategoria + '; sem_categoria=' + semCategoria.length);
   }
 
+  /**
+   * Saldo de cada versão de passivo dentro dos limites: nunca negativo,
+   * nunca acima do que foi assumido na origem. É o guardião contra
+   * comportamento não suportado (juro capitalizado que faça o saldo crescer
+   * sozinho, ou amortização que o leve abaixo de zero) — falha explícita em
+   * vez de número silenciosamente errado.
+   */
+  function passivosSaldoValido(linhas) {
+    var problemas = [];
+    (linhas || []).forEach(function (p) {
+      var aberto = FOS.Config.parseNumber(p.valor_aberto);
+      var original = FOS.Config.parseNumber(p.valor_devido_original);
+      if (aberto === null || original === null) {
+        problemas.push('VALOR_INVALIDO:' + p.passivo_id + '@v' + p.versao);
+        return;
+      }
+      if (aberto < 0 || aberto > original) {
+        problemas.push('FORA_DOS_LIMITES:' + p.passivo_id + '@v' + p.versao);
+      }
+    });
+    return res('PASSIVOS_SALDO_VALIDO', problemas.length === 0, problemas.join(',') || null);
+  }
+
   /** O fechamento anterior não pode ter mudado (checksum recalculado). */
   function fechamentoAnteriorImutavel(fechamentoAnterior, recalcularChecksum) {
     if (!fechamentoAnterior) return res('FECHAMENTO_ANTERIOR_IMUTAVEL', true, 'SEM_FECHAMENTO_ANTERIOR');
@@ -4335,6 +4526,8 @@
       taxaCambialDisponivel(ctx.taxa, ctx.exposicaoEstrangeira),
       subledgerVersionado(ctx.provisoesLinhas, 'provisao_id', 'PROVISOES_VERSIONADAS'),
       subledgerVersionado(ctx.objetivosLinhas, 'objetivo_id', 'OBJETIVOS_VERSIONADOS'),
+      subledgerVersionado(ctx.passivosLinhas, 'passivo_id', 'PASSIVOS_VERSIONADOS'),
+      passivosSaldoValido(ctx.passivosLinhas),
       somaCategorias(ctx.linhasCompetencia)
     ];
     if (ctx.fechamentoAnterior && ctx.recalcularChecksum) {
@@ -4353,6 +4546,7 @@
     snapshotsAtivos: snapshotsAtivos,
     taxaCambialDisponivel: taxaCambialDisponivel,
     subledgerVersionado: subledgerVersionado,
+    passivosSaldoValido: passivosSaldoValido,
     somaCategorias: somaCategorias,
     fechamentoAnteriorImutavel: fechamentoAnteriorImutavel,
     verificarTodas: verificarTodas
@@ -4579,6 +4773,7 @@
     // versões criadas depois dele.
     var provisoesCorrentes = FOS.Subledger.correntesEm(ctx.provisoesLinhas, 'provisao_id', competencia);
     var objetivosCorrentes = FOS.Subledger.correntesEm(ctx.objetivosLinhas, 'objetivo_id', competencia);
+    var passivosCorrentes = FOS.Subledger.correntesEm(ctx.passivosLinhas, 'passivo_id', competencia);
 
     var provisoesAvaliadas = provisoesCorrentes.map(function (p) {
       return FOS.Provisions.avaliar(p, {
@@ -4597,7 +4792,12 @@
       });
     });
 
-    var funcoes = FOS.Life.funcoesDoDinheiro(caixa, provisoesAvaliadas, objetivosAvaliados);
+    var passivosAvaliados = passivosCorrentes.map(function (p) {
+      return FOS.Liabilities.avaliar(p, { dataReferencia: range.fim });
+    });
+    var passivosAbertoTotal = FOS.Liabilities.totalAberto(passivosAvaliados);
+
+    var funcoes = FOS.Life.funcoesDoDinheiro(caixa, provisoesAvaliadas, objetivosAvaliados, passivosAbertoTotal);
     var disponivel = FOS.Life.disponivel(caixa, funcoes);
     var runway = FOS.Life.runway(disponivel, custoMedio);
 
@@ -4688,11 +4888,16 @@
         custo_vida_medio_brl: managed(custoMedio),
         disponivel_brl: managed(disponivel),
         runway_meses: managed(runway),
+        // Soma de valor_aberto: sempre calculável a partir das linhas de
+        // passivo (zero sem nenhuma), nunca depende de caixa nem de taxa —
+        // por isso é managed(value(...)), não managed(caixa)-dependente.
+        passivos_abertos_brl: managed(FOS.Core.value(passivosAbertoTotal)),
         funcoes_do_dinheiro: funcoes
       },
 
       provisoes: provisoesAvaliadas,
       objetivos: objetivosAvaliados,
+      passivos: passivosAvaliados,
       patrimonio: pat,
 
       estado_ciclo: {
@@ -4741,6 +4946,7 @@
       exposicaoEstrangeira: ctx.exposicaoEstrangeira,
       provisoesLinhas: ctx.provisoesLinhas,
       objetivosLinhas: ctx.objetivosLinhas,
+      passivosLinhas: ctx.passivosLinhas,
       fechamentoAnterior: ctx.fechamentoAnterior,
       recalcularChecksum: ctx.recalcularChecksum
     });
@@ -4981,6 +5187,7 @@
     'vida.custo_vida_medio_brl',
     'vida.disponivel_brl',
     'vida.runway_meses',
+    'vida.passivos_abertos_brl',
     'vida.funcoes_do_dinheiro',
     'trading.capital_gbp',
     'trading.metricas.caixa_retirado_brl',
@@ -5065,6 +5272,20 @@
     });
   }
 
+  function passivosPermitidos(snapshot) {
+    return (snapshot.passivos || []).map(function (p) {
+      return {
+        passivo_id: p.passivo_id,
+        nome: p.nome,
+        credor: p.credor,
+        status: p.status,
+        valor_devido_original: p.valor_devido_original,
+        valor_aberto: p.valor_aberto,
+        vencimento: p.vencimento
+      };
+    });
+  }
+
   function sinaisPermitidos(snapshot) {
     return (snapshot.sinais || []).map(function (s) {
       return { codigo: s.codigo, valor: s.valor, status: s.status, reason: s.reason };
@@ -5099,6 +5320,7 @@
     dados.patrimonio.posicoes = posicoesPermitidas(snapshot);
     dados.provisoes = provisoesPermitidas(snapshot);
     dados.objetivos = objetivosPermitidos(snapshot);
+    dados.passivos = passivosPermitidos(snapshot);
     dados.sinais = sinaisPermitidos(snapshot);
     dados.acoes = acoesPermitidas(snapshot);
     dados.somente_leitura = true;
@@ -5466,6 +5688,27 @@
     });
     if (!(d.objetivos || []).length) {
       linhas.push(linha('OBJETIVO', 'Nenhum objetivo registrado', { status: 'NULL', motivo: 'SEM_OBJETIVOS' }));
+    }
+
+    // PASSIVO reusa as mesmas colunas de PROVISAO, espelhadas: alvo é o que
+    // foi assumido (valor_devido_original), acumulado é o que já foi
+    // amortizado, faltante é o saldo em aberto — a mesma relação
+    // alvo = acumulado + faltante que já vale para provisão, só que aqui o
+    // "alvo" caminha para trás em vez de para a frente. motivo carrega o
+    // credor: é o único dado extra que "credor, saldo aberto, vencimento,
+    // status" pede e que as colunas existentes não nomeiam.
+    (d.passivos || []).forEach(function (p) {
+      linhas.push(linha('PASSIVO', p.nome, {
+        status: p.status,
+        alvo: p.valor_devido_original,
+        acumulado: FOS.Core.round2(p.valor_devido_original - p.valor_aberto),
+        faltante: p.valor_aberto,
+        vencimento: p.vencimento || '',
+        motivo: p.credor || ''
+      }));
+    });
+    if (!(d.passivos || []).length) {
+      linhas.push(linha('PASSIVO', 'Nenhum passivo registrado', { status: 'NULL', motivo: 'SEM_PASSIVOS' }));
     }
 
     linhas.push(linha('FECHAMENTO', 'Competência fechada', {
@@ -6181,7 +6424,7 @@
 
       eventos: function () {
         return ler(A.EVENTOS_MANUAIS).map(function (e) {
-          return numerico(e, ['valor', 'valor_origem_moeda']);
+          return numerico(e, ['valor', 'valor_devido', 'valor_origem_moeda']);
         });
       },
 
@@ -6217,6 +6460,12 @@
 
       posicoes: function () {
         return ler(A.POSICOES).map(function (e) { return numerico(e, ['valor', 'quantidade']); });
+      },
+
+      passivos: function () {
+        return ler(A.PASSIVOS).map(function (p) {
+          return numerico(p, ['versao', 'valor_devido_original', 'valor_aberto']);
+        });
       },
 
       fechamentos: function () {
@@ -6569,7 +6818,7 @@
   var ABAS_INTERNAS_OCULTAS = [
     A.CONFIG, A.IMPORT_EXTRATO, A.EVENTOS_MANUAIS, A.SALDOS_TRADING,
     A.REGRAS, A.FILA_REVISAO, A.LEDGER, A.PROVISOES, A.OBJETIVOS,
-    A.POSICOES, A.FECHAMENTOS, A.RESTATEMENTS, A.LOG
+    A.POSICOES, A.PASSIVOS, A.FECHAMENTOS, A.RESTATEMENTS, A.LOG
   ];
 
   /**
@@ -7058,6 +7307,7 @@
         posicoes: posicoes,
         provisoesLinhas: repo.provisoes(),
         objetivosLinhas: repo.objetivos(),
+        passivosLinhas: repo.passivos(),
         taxa: taxa,
         taxaAnterior: taxaAnterior,
         exposicaoEstrangeira: exposicao,
@@ -7514,10 +7764,12 @@
 
     /**
      * Materializa eventos declarativos nos subledgers.
-     *  NOVA_OBRIGACAO  -> nova versão em 30_PROVISOES
-     *  NOVO_OBJETIVO   -> nova versão em 31_OBJETIVOS
-     *  APORTE_POSICAO  -> evento APORTE em 32_LEDGER_POSICOES
-     *  RETIRADA_POSICAO-> evento RETIRADA em 32_LEDGER_POSICOES
+     *  NOVA_OBRIGACAO      -> nova versão em 30_PROVISOES
+     *  NOVO_OBJETIVO       -> nova versão em 31_OBJETIVOS
+     *  APORTE_POSICAO      -> evento APORTE em 32_LEDGER_POSICOES
+     *  RETIRADA_POSICAO    -> evento RETIRADA em 32_LEDGER_POSICOES
+     *  NOVO_PASSIVO        -> v1 em 33_PASSIVOS
+     *  AMORTIZACAO_PASSIVO -> nova versão em 33_PASSIVOS, valor_aberto reduzido
      * Idempotente: cada evento manual materializa no máximo uma vez, e a
      * origem do registro fica gravada em origem_evento_id / evento_id.
      */
@@ -7528,10 +7780,12 @@
       var provisoesLinhas = repo.provisoes();
       var objetivosLinhas = repo.objetivos();
       var posicoesLinhas = repo.posicoes();
+      var passivosLinhas = repo.passivos();
 
       var provisoesNovas = [];
       var objetivosNovos = [];
       var posicoesNovas = [];
+      var passivosNovos = [];
       var ignorados = [];
       var invalidos = [];
 
@@ -7557,7 +7811,8 @@
           return;
         }
         if ([C.TIPO_EVENTO.NOVA_OBRIGACAO, C.TIPO_EVENTO.NOVO_OBJETIVO,
-          C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO].indexOf(tipo) === -1) return;
+          C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO,
+          C.TIPO_EVENTO.NOVO_PASSIVO, C.TIPO_EVENTO.AMORTIZACAO_PASSIVO].indexOf(tipo) === -1) return;
 
         var validacao = FOS.Events.validar(evento, config);
         if (!validacao.ok) {
@@ -7635,6 +7890,87 @@
           return;
         }
 
+        if (tipo === C.TIPO_EVENTO.NOVO_PASSIVO) {
+          if (jaMaterializado(passivosLinhas.concat(passivosNovos), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var passivoExistente = FOS.Subledger.correntes(
+            passivosLinhas.concat(passivosNovos), 'passivo_id'
+          ).filter(function (p) { return String(p.passivo_id) === referencia; })[0];
+          if (passivoExistente) {
+            // NOVO_PASSIVO nasce uma vez. Reusar o id de um passivo já
+            // existente é declaração ambígua — não sabemos se é engano ou
+            // um segundo empréstimo com o mesmo id por acidente — e nunca
+            // vira uma segunda v1 nem uma versão silenciosa da primeira.
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{ codigo: 'PASSIVO_JA_EXISTE', detalhe: referencia }]
+            });
+            return;
+          }
+          // valor_devido, quando informado, é a obrigação; vazio, a
+          // obrigação é o próprio caixa recebido (empréstimo sem desconto).
+          var valorDevidoInformado = FOS.Normalize.valor(evento.valor_devido);
+          var valorDevido = valorDevidoInformado === null ? valor : valorDevidoInformado;
+          passivosNovos.push({
+            passivo_id: referencia,
+            versao: 1,
+            nome: evento.descricao || referencia,
+            // Reusa observacao do evento para o credor, no mesmo padrão que
+            // NOVA_OBRIGACAO já usa observacao para prioridade: campo livre
+            // do evento, estruturado no destino. Nunca usado em cálculo.
+            credor: evento.observacao || '',
+            valor_devido_original: valorDevido,
+            valor_aberto: valorDevido,
+            moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
+            vencimento: String(evento.vencimento),
+            origem_evento_id: evento.evento_id,
+            vigente_desde: String(evento.data),
+            vigente_ate: '',
+            criado_em: agora,
+            motivo_versao: 'CRIADO_POR_EVENTO:' + evento.evento_id,
+            observacao: ''
+          });
+          return;
+        }
+
+        if (tipo === C.TIPO_EVENTO.AMORTIZACAO_PASSIVO) {
+          if (jaMaterializado(passivosLinhas.concat(passivosNovos), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var passivoAtual = FOS.Subledger.correntes(
+            passivosLinhas.concat(passivosNovos), 'passivo_id'
+          ).filter(function (p) { return String(p.passivo_id) === referencia; })[0];
+          if (!passivoAtual) {
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{ codigo: 'PASSIVO_INEXISTENTE', detalhe: referencia }]
+            });
+            return;
+          }
+          var novoSaldo = FOS.Core.round2(Number(passivoAtual.valor_aberto) - valor);
+          if (novoSaldo < 0) {
+            // Amortização nunca pode tornar o saldo negativo — falha
+            // explícita em vez de zerar ou aceitar em silêncio um valor
+            // maior do que o devido.
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{
+                codigo: 'AMORTIZACAO_EXCEDE_SALDO',
+                detalhe: 'saldo_aberto=' + passivoAtual.valor_aberto + '; amortizacao=' + valor
+              }]
+            });
+            return;
+          }
+          passivosNovos.push(FOS.Subledger.novaVersao(passivoAtual, {
+            valor_aberto: novoSaldo,
+            origem_evento_id: evento.evento_id
+          }, agora, 'AMORTIZACAO_PASSIVO:' + evento.evento_id));
+          return;
+        }
+
         // APORTE_POSICAO / RETIRADA_POSICAO
         var eventoIdPosicao = 'PE-' + FOS.Hash.hashParts([evento.evento_id, tipo]).slice(0, 12);
         if (jaMaterializado(posicoesLinhas.concat(posicoesNovas), 'origem', evento.evento_id)
@@ -7661,8 +7997,10 @@
       repo.anexar(A.PROVISOES, provisoesNovas);
       repo.anexar(A.OBJETIVOS, objetivosNovos);
       repo.anexar(A.POSICOES, posicoesNovas);
+      repo.anexar(A.PASSIVOS, passivosNovos);
 
-      if (provisoesNovas.length || objetivosNovos.length || posicoesNovas.length || invalidos.length) {
+      if (provisoesNovas.length || objetivosNovos.length || posicoesNovas.length
+        || passivosNovos.length || invalidos.length) {
         auditoria.registrar({
           acao: 'MATERIALIZAR_EVENTOS',
           entidade: 'SUBLEDGERS',
@@ -7670,12 +8008,14 @@
           antes: {
             provisoes: provisoesLinhas.length,
             objetivos: objetivosLinhas.length,
-            posicoes: posicoesLinhas.length
+            posicoes: posicoesLinhas.length,
+            passivos: passivosLinhas.length
           },
           depois: {
             provisoes: provisoesLinhas.length + provisoesNovas.length,
             objetivos: objetivosLinhas.length + objetivosNovos.length,
-            posicoes: posicoesLinhas.length + posicoesNovas.length
+            posicoes: posicoesLinhas.length + posicoesNovas.length,
+            passivos: passivosLinhas.length + passivosNovos.length
           },
           resultado: invalidos.length ? 'PARCIAL' : 'OK',
           detalhe: { ignorados: ignorados, invalidos: invalidos }
@@ -7687,6 +8027,7 @@
         provisoes: provisoesNovas,
         objetivos: objetivosNovos,
         posicoes: posicoesNovas,
+        passivos: passivosNovos,
         ignorados: ignorados,
         invalidos: invalidos
       };

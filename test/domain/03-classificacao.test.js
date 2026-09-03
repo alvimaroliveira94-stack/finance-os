@@ -110,8 +110,8 @@ describe('Classificação determinística', () => {
     assert.equal(d.motivo, 'CATEGORIA_NAO_CANONICA');
   });
 
-  it('tem exatamente as sete categorias canônicas', { scenario: 'C05' }, () => {
-    assert.equal(C.values(C.CATEGORIA).length, 7);
+  it('tem exatamente as oito categorias canônicas', { scenario: 'C05' }, () => {
+    assert.equal(C.values(C.CATEGORIA).length, 8);
   });
 });
 

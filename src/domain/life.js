@@ -69,20 +69,30 @@
   /**
    * Funções do dinheiro: para que serve cada real do caixa de vida.
    * PROTECAO = provisões acumuladas; OBJETIVOS = objetivos acumulados;
+   * PASSIVOS_ABERTOS = dívida com terceiro ainda não quitada, deduzida
+   * INTEGRALMENTE (não proporcional ao prazo: não é seu em nenhuma fração);
    * LIVRE = o que sobra (pode ser negativo, e isso é informação, não erro).
+   *
+   * @param {number} [passivosAbertoTotal] soma de valor_aberto dos passivos
+   *   vigentes na competência. Omitido (ou 0) quando não há passivo algum.
    */
-  function funcoesDoDinheiro(caixa, provisoes, objetivos) {
+  function funcoesDoDinheiro(caixa, provisoes, objetivos, passivosAbertoTotal) {
     if (!FOS.Core.isOk(caixa)) {
-      return { status: caixa.status, reason: caixa.reason, protecao: null, objetivos: null, livre: null, total: null };
+      return {
+        status: caixa.status, reason: caixa.reason,
+        protecao: null, objetivos: null, passivos_abertos: null, livre: null, total: null
+      };
     }
     var protecao = FOS.Core.sum(provisoes, function (p) { return Number(p.valor_acumulado) || 0; });
     var objetivo = FOS.Core.sum(objetivos, function (o) { return Number(o.valor_acumulado) || 0; });
+    var passivos = Number(passivosAbertoTotal) || 0;
     return {
       status: 'OK',
       reason: null,
       protecao: protecao,
       objetivos: objetivo,
-      livre: FOS.Core.round2(caixa.value - protecao - objetivo),
+      passivos_abertos: passivos,
+      livre: FOS.Core.round2(caixa.value - protecao - objetivo - passivos),
       total: caixa.value
     };
   }

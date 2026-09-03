@@ -44,7 +44,7 @@
 
       eventos: function () {
         return ler(A.EVENTOS_MANUAIS).map(function (e) {
-          return numerico(e, ['valor', 'valor_origem_moeda']);
+          return numerico(e, ['valor', 'valor_devido', 'valor_origem_moeda']);
         });
       },
 
@@ -80,6 +80,12 @@
 
       posicoes: function () {
         return ler(A.POSICOES).map(function (e) { return numerico(e, ['valor', 'quantidade']); });
+      },
+
+      passivos: function () {
+        return ler(A.PASSIVOS).map(function (p) {
+          return numerico(p, ['versao', 'valor_devido_original', 'valor_aberto']);
+        });
       },
 
       fechamentos: function () {

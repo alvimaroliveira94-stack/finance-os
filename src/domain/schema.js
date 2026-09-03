@@ -48,11 +48,20 @@
 
   SCHEMA[A.EVENTOS_MANUAIS] = {
     nome: A.EVENTOS_MANUAIS,
-    descricao: 'Os sete tipos de evento manual declarados pelo usuário.',
+    descricao: 'Os nove tipos de evento manual declarados pelo usuário.',
     chave: ['evento_id'],
     colunas: [
-      'evento_id', 'tipo_evento', 'data', 'conta_origem', 'conta_destino',
-      'valor', 'moeda', 'valor_origem_moeda', 'moeda_origem',
+      'evento_id', 'tipo_evento', 'data',
+      // vencimento é exclusivo de NOVO_PASSIVO: a data de quitação da
+      // obrigação, estruturalmente distinta de `data` (a data da
+      // movimentação bancária, usada na conciliação). Inativo/vazio em
+      // todo o resto do catálogo.
+      'vencimento',
+      'conta_origem', 'conta_destino',
+      // valor_devido é exclusivo de NOVO_PASSIVO: a obrigação total
+      // assumida, quando diferente do dinheiro efetivamente recebido
+      // (`valor`) — por exemplo, juros descontados na origem.
+      'valor', 'valor_devido', 'moeda', 'valor_origem_moeda', 'moeda_origem',
       'descricao', 'referencia_id', 'status',
       'fingerprint_conciliado', 'criado_em', 'criado_por', 'observacao'
     ]
@@ -134,6 +143,19 @@
     colunas: [
       'evento_id', 'posicao_id', 'tipo_evento', 'data', 'valor', 'moeda',
       'quantidade', 'compensa_evento_id', 'origem', 'criado_em', 'observacao'
+    ]
+  };
+
+  SCHEMA[A.PASSIVOS] = {
+    nome: A.PASSIVOS,
+    descricao: 'Subledger versionado de passivos (quanto se deve a terceiro). '
+      + 'Nasce de NOVO_PASSIVO, baixa por AMORTIZACAO_PASSIVO. Nunca editado à mão.',
+    chave: ['passivo_id', 'versao'],
+    colunas: [
+      'passivo_id', 'versao', 'nome', 'credor',
+      'valor_devido_original', 'valor_aberto', 'moeda', 'vencimento',
+      'origem_evento_id', 'vigente_desde', 'vigente_ate',
+      'criado_em', 'motivo_versao', 'observacao'
     ]
   };
 

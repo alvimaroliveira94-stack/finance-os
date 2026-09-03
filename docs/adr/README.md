@@ -3,7 +3,7 @@
 Índice canônico. Cada ADR registra **decisões técnicas reversíveis** e o porquê
 delas — não o que o código faz, mas o que ele recusa fazer e a razão.
 
-Decisões financeiras canônicas (categorias, os sete eventos, as quatro métricas
+Decisões financeiras canônicas (categorias, os nove eventos, as quatro métricas
 de trading, regras de estado, provisões e sinais) vieram definidas pelo usuário e
 não são objeto destes documentos. A exceção é o ADR 0002, que registra uma
 política financeira aprovada explicitamente e que o código implementa como está.
@@ -17,6 +17,7 @@ política financeira aprovada explicitamente e que o código implementa como est
 | [0005](0005-fila-como-protocolo.md) | Fila de revisão como protocolo de decisão | aceito | Pergunta por origem do item, `DESCARTAR`, cancelar não resolve, correção posterior |
 | [0006](0006-superficie-operacional.md) | Superfície operacional de quatro abas | aceito | Abas visíveis, navegação por menu, restauração canônica |
 | [0007](0007-calibracao-de-classificacao.md) | Calibração da classificação: a regra nasce da decisão, com escopo exato | aceito | Assinatura segura, IGUAL sobre assinatura, três modos, cinco portões, correção fail-safe |
+| [0008](0008-passivo-minimo-canonico.md) | Passivo mínimo canônico: quanto devo é verdade de primeira classe | aceito | Subledger próprio, `valor` × `valor_devido`, custo retido sempre derivado, dedução integral do disponível, patrimônio líquido fora do MVP |
 
 ## Como ler
 
@@ -30,8 +31,9 @@ mantidos separados de propósito: fila é decisão de domínio e superfície é 
 de produto; ciclo de vida de parâmetro é configuração e política de câmbio é
 regra financeira. Podem evoluir e ser superseded independentemente.
 
-O **0007** é o único ainda não implantado em produção: o código está construído e
-testado, e a mutação da planilha real depende de validação controlada.
+Os ADRs **0007** e **0008** ainda não estão implantados em produção: o código de
+cada um está construído e testado, e a mutação da planilha real depende de
+validação controlada.
 
 ## Convenção
 

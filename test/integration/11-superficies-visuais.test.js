@@ -30,7 +30,7 @@ describe('Do fechamento às superfícies', () => {
     assert.equal(painel.atual.status, 'OK');
     assert.deep(Object.keys(painel.atual.dados).sort(), [
       'acoes', 'cambio', 'competencia', 'estado', 'estado_ciclo', 'fechado_em',
-      'gerado_em', 'moeda_gerencial', 'objetivos', 'patrimonio', 'provisoes',
+      'gerado_em', 'moeda_gerencial', 'objetivos', 'passivos', 'patrimonio', 'provisoes',
       'qualidade', 'sinais', 'somente_leitura', 'trading', 'vida'
     ]);
   });

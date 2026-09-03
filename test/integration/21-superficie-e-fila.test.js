@@ -313,7 +313,7 @@ describe('Superfície canônica', () => {
     C.values(A).forEach((nome) => {
       assert.ok(ctx.planilha.abaEstaOculta(nome), nome + ' deve estar oculta');
     });
-    assert.equal(B.ABAS_INTERNAS_OCULTAS.length, 13, 'todas as internas');
+    assert.equal(B.ABAS_INTERNAS_OCULTAS.length, 14, 'todas as internas, incluindo 33_PASSIVOS');
   });
 
   it('a fila de revisão não é ponto de entrada', { scenario: 'C52' }, () => {

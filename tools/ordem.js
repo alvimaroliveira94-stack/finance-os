@@ -32,6 +32,7 @@ const ORDEM = [
   'domain/subledger.js',
   'domain/provisions.js',
   'domain/objectives.js',
+  'domain/liabilities.js',
   'domain/positions.js',
   'domain/fx.js',
   'domain/trading.js',

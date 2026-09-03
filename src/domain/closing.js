@@ -217,6 +217,7 @@
     // versões criadas depois dele.
     var provisoesCorrentes = FOS.Subledger.correntesEm(ctx.provisoesLinhas, 'provisao_id', competencia);
     var objetivosCorrentes = FOS.Subledger.correntesEm(ctx.objetivosLinhas, 'objetivo_id', competencia);
+    var passivosCorrentes = FOS.Subledger.correntesEm(ctx.passivosLinhas, 'passivo_id', competencia);
 
     var provisoesAvaliadas = provisoesCorrentes.map(function (p) {
       return FOS.Provisions.avaliar(p, {
@@ -235,7 +236,12 @@
       });
     });
 
-    var funcoes = FOS.Life.funcoesDoDinheiro(caixa, provisoesAvaliadas, objetivosAvaliados);
+    var passivosAvaliados = passivosCorrentes.map(function (p) {
+      return FOS.Liabilities.avaliar(p, { dataReferencia: range.fim });
+    });
+    var passivosAbertoTotal = FOS.Liabilities.totalAberto(passivosAvaliados);
+
+    var funcoes = FOS.Life.funcoesDoDinheiro(caixa, provisoesAvaliadas, objetivosAvaliados, passivosAbertoTotal);
     var disponivel = FOS.Life.disponivel(caixa, funcoes);
     var runway = FOS.Life.runway(disponivel, custoMedio);
 
@@ -326,11 +332,16 @@
         custo_vida_medio_brl: managed(custoMedio),
         disponivel_brl: managed(disponivel),
         runway_meses: managed(runway),
+        // Soma de valor_aberto: sempre calculável a partir das linhas de
+        // passivo (zero sem nenhuma), nunca depende de caixa nem de taxa —
+        // por isso é managed(value(...)), não managed(caixa)-dependente.
+        passivos_abertos_brl: managed(FOS.Core.value(passivosAbertoTotal)),
         funcoes_do_dinheiro: funcoes
       },
 
       provisoes: provisoesAvaliadas,
       objetivos: objetivosAvaliados,
+      passivos: passivosAvaliados,
       patrimonio: pat,
 
       estado_ciclo: {
@@ -379,6 +390,7 @@
       exposicaoEstrangeira: ctx.exposicaoEstrangeira,
       provisoesLinhas: ctx.provisoesLinhas,
       objetivosLinhas: ctx.objetivosLinhas,
+      passivosLinhas: ctx.passivosLinhas,
       fechamentoAnterior: ctx.fechamentoAnterior,
       recalcularChecksum: ctx.recalcularChecksum
     });

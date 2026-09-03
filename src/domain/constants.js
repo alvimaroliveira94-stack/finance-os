@@ -28,6 +28,7 @@
     PROVISOES: '30_PROVISOES',
     OBJETIVOS: '31_OBJETIVOS',
     POSICOES: '32_LEDGER_POSICOES',
+    PASSIVOS: '33_PASSIVOS',
     FECHAMENTOS: '40_FECHAMENTOS',
     RESTATEMENTS: '41_RESTATEMENTS',
     LOG: '90_LOG_AUDITORIA'
@@ -46,7 +47,15 @@
     SALDO_SEMANAL: 'SALDO_SEMANAL'
   };
 
-  /** Categorias canônicas de classificação. */
+  /**
+   * Categorias canônicas de classificação.
+   *
+   * MOVIMENTACAO_COM_TERCEIRO: caixa que se move entre o usuário e um
+   * terceiro sem ser consumo, receita, trading, patrimônio nem transferência
+   * entre contas próprias. É a categoria de nascimento e quitação de um
+   * passivo (33_PASSIVOS é quem sabe quanto ainda se deve; a categoria só
+   * diz que o dinheiro se moveu).
+   */
   var CATEGORIA = {
     CUSTO_VIDA: 'CUSTO_VIDA',
     CUSTO_TRADING: 'CUSTO_TRADING',
@@ -54,10 +63,11 @@
     GASTO_EXTRAORDINARIO: 'GASTO_EXTRAORDINARIO',
     APORTE_EXTRAORDINARIO: 'APORTE_EXTRAORDINARIO',
     TRANSFERENCIA_INTERNA: 'TRANSFERENCIA_INTERNA',
-    PATRIMONIO_OBJETIVOS: 'PATRIMONIO_OBJETIVOS'
+    PATRIMONIO_OBJETIVOS: 'PATRIMONIO_OBJETIVOS',
+    MOVIMENTACAO_COM_TERCEIRO: 'MOVIMENTACAO_COM_TERCEIRO'
   };
 
-  /** Tipos de evento manual (aba 11). Exatamente sete. */
+  /** Tipos de evento manual (aba 11). Exatamente nove. */
   var TIPO_EVENTO = {
     SAQUE_TRADING: 'SAQUE_TRADING',
     GASTO_EXTRAORDINARIO: 'GASTO_EXTRAORDINARIO',
@@ -65,7 +75,9 @@
     NOVA_OBRIGACAO: 'NOVA_OBRIGACAO',
     NOVO_OBJETIVO: 'NOVO_OBJETIVO',
     APORTE_POSICAO: 'APORTE_POSICAO',
-    RETIRADA_POSICAO: 'RETIRADA_POSICAO'
+    RETIRADA_POSICAO: 'RETIRADA_POSICAO',
+    NOVO_PASSIVO: 'NOVO_PASSIVO',
+    AMORTIZACAO_PASSIVO: 'AMORTIZACAO_PASSIVO'
   };
 
   /** Tipos de evento do ledger de posições (aba 32). */

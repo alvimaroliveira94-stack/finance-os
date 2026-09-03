@@ -195,6 +195,6 @@ describe('Fluxo completo de ponta a ponta', () => {
     const antes = ctx.repositorio.configLinhas().length;
     FOS.App.Bootstrap.inicializar({ planilha: ctx.planilha, repositorio: ctx.repositorio });
     assert.equal(ctx.repositorio.configLinhas().length, antes);
-    assert.equal(ctx.planilha.listarAbas().length, 17, '4 abas visíveis + 13 internas');
+    assert.equal(ctx.planilha.listarAbas().length, 18, '4 abas visíveis + 14 internas');
   });
 });

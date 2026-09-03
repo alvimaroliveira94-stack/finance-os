@@ -278,6 +278,7 @@
         posicoes: posicoes,
         provisoesLinhas: repo.provisoes(),
         objetivosLinhas: repo.objetivos(),
+        passivosLinhas: repo.passivos(),
         taxa: taxa,
         taxaAnterior: taxaAnterior,
         exposicaoEstrangeira: exposicao,
@@ -734,10 +735,12 @@
 
     /**
      * Materializa eventos declarativos nos subledgers.
-     *  NOVA_OBRIGACAO  -> nova versão em 30_PROVISOES
-     *  NOVO_OBJETIVO   -> nova versão em 31_OBJETIVOS
-     *  APORTE_POSICAO  -> evento APORTE em 32_LEDGER_POSICOES
-     *  RETIRADA_POSICAO-> evento RETIRADA em 32_LEDGER_POSICOES
+     *  NOVA_OBRIGACAO      -> nova versão em 30_PROVISOES
+     *  NOVO_OBJETIVO       -> nova versão em 31_OBJETIVOS
+     *  APORTE_POSICAO      -> evento APORTE em 32_LEDGER_POSICOES
+     *  RETIRADA_POSICAO    -> evento RETIRADA em 32_LEDGER_POSICOES
+     *  NOVO_PASSIVO        -> v1 em 33_PASSIVOS
+     *  AMORTIZACAO_PASSIVO -> nova versão em 33_PASSIVOS, valor_aberto reduzido
      * Idempotente: cada evento manual materializa no máximo uma vez, e a
      * origem do registro fica gravada em origem_evento_id / evento_id.
      */
@@ -748,10 +751,12 @@
       var provisoesLinhas = repo.provisoes();
       var objetivosLinhas = repo.objetivos();
       var posicoesLinhas = repo.posicoes();
+      var passivosLinhas = repo.passivos();
 
       var provisoesNovas = [];
       var objetivosNovos = [];
       var posicoesNovas = [];
+      var passivosNovos = [];
       var ignorados = [];
       var invalidos = [];
 
@@ -777,7 +782,8 @@
           return;
         }
         if ([C.TIPO_EVENTO.NOVA_OBRIGACAO, C.TIPO_EVENTO.NOVO_OBJETIVO,
-          C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO].indexOf(tipo) === -1) return;
+          C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO,
+          C.TIPO_EVENTO.NOVO_PASSIVO, C.TIPO_EVENTO.AMORTIZACAO_PASSIVO].indexOf(tipo) === -1) return;
 
         var validacao = FOS.Events.validar(evento, config);
         if (!validacao.ok) {
@@ -855,6 +861,87 @@
           return;
         }
 
+        if (tipo === C.TIPO_EVENTO.NOVO_PASSIVO) {
+          if (jaMaterializado(passivosLinhas.concat(passivosNovos), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var passivoExistente = FOS.Subledger.correntes(
+            passivosLinhas.concat(passivosNovos), 'passivo_id'
+          ).filter(function (p) { return String(p.passivo_id) === referencia; })[0];
+          if (passivoExistente) {
+            // NOVO_PASSIVO nasce uma vez. Reusar o id de um passivo já
+            // existente é declaração ambígua — não sabemos se é engano ou
+            // um segundo empréstimo com o mesmo id por acidente — e nunca
+            // vira uma segunda v1 nem uma versão silenciosa da primeira.
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{ codigo: 'PASSIVO_JA_EXISTE', detalhe: referencia }]
+            });
+            return;
+          }
+          // valor_devido, quando informado, é a obrigação; vazio, a
+          // obrigação é o próprio caixa recebido (empréstimo sem desconto).
+          var valorDevidoInformado = FOS.Normalize.valor(evento.valor_devido);
+          var valorDevido = valorDevidoInformado === null ? valor : valorDevidoInformado;
+          passivosNovos.push({
+            passivo_id: referencia,
+            versao: 1,
+            nome: evento.descricao || referencia,
+            // Reusa observacao do evento para o credor, no mesmo padrão que
+            // NOVA_OBRIGACAO já usa observacao para prioridade: campo livre
+            // do evento, estruturado no destino. Nunca usado em cálculo.
+            credor: evento.observacao || '',
+            valor_devido_original: valorDevido,
+            valor_aberto: valorDevido,
+            moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
+            vencimento: String(evento.vencimento),
+            origem_evento_id: evento.evento_id,
+            vigente_desde: String(evento.data),
+            vigente_ate: '',
+            criado_em: agora,
+            motivo_versao: 'CRIADO_POR_EVENTO:' + evento.evento_id,
+            observacao: ''
+          });
+          return;
+        }
+
+        if (tipo === C.TIPO_EVENTO.AMORTIZACAO_PASSIVO) {
+          if (jaMaterializado(passivosLinhas.concat(passivosNovos), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var passivoAtual = FOS.Subledger.correntes(
+            passivosLinhas.concat(passivosNovos), 'passivo_id'
+          ).filter(function (p) { return String(p.passivo_id) === referencia; })[0];
+          if (!passivoAtual) {
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{ codigo: 'PASSIVO_INEXISTENTE', detalhe: referencia }]
+            });
+            return;
+          }
+          var novoSaldo = FOS.Core.round2(Number(passivoAtual.valor_aberto) - valor);
+          if (novoSaldo < 0) {
+            // Amortização nunca pode tornar o saldo negativo — falha
+            // explícita em vez de zerar ou aceitar em silêncio um valor
+            // maior do que o devido.
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{
+                codigo: 'AMORTIZACAO_EXCEDE_SALDO',
+                detalhe: 'saldo_aberto=' + passivoAtual.valor_aberto + '; amortizacao=' + valor
+              }]
+            });
+            return;
+          }
+          passivosNovos.push(FOS.Subledger.novaVersao(passivoAtual, {
+            valor_aberto: novoSaldo,
+            origem_evento_id: evento.evento_id
+          }, agora, 'AMORTIZACAO_PASSIVO:' + evento.evento_id));
+          return;
+        }
+
         // APORTE_POSICAO / RETIRADA_POSICAO
         var eventoIdPosicao = 'PE-' + FOS.Hash.hashParts([evento.evento_id, tipo]).slice(0, 12);
         if (jaMaterializado(posicoesLinhas.concat(posicoesNovas), 'origem', evento.evento_id)
@@ -881,8 +968,10 @@
       repo.anexar(A.PROVISOES, provisoesNovas);
       repo.anexar(A.OBJETIVOS, objetivosNovos);
       repo.anexar(A.POSICOES, posicoesNovas);
+      repo.anexar(A.PASSIVOS, passivosNovos);
 
-      if (provisoesNovas.length || objetivosNovos.length || posicoesNovas.length || invalidos.length) {
+      if (provisoesNovas.length || objetivosNovos.length || posicoesNovas.length
+        || passivosNovos.length || invalidos.length) {
         auditoria.registrar({
           acao: 'MATERIALIZAR_EVENTOS',
           entidade: 'SUBLEDGERS',
@@ -890,12 +979,14 @@
           antes: {
             provisoes: provisoesLinhas.length,
             objetivos: objetivosLinhas.length,
-            posicoes: posicoesLinhas.length
+            posicoes: posicoesLinhas.length,
+            passivos: passivosLinhas.length
           },
           depois: {
             provisoes: provisoesLinhas.length + provisoesNovas.length,
             objetivos: objetivosLinhas.length + objetivosNovos.length,
-            posicoes: posicoesLinhas.length + posicoesNovas.length
+            posicoes: posicoesLinhas.length + posicoesNovas.length,
+            passivos: passivosLinhas.length + passivosNovos.length
           },
           resultado: invalidos.length ? 'PARCIAL' : 'OK',
           detalhe: { ignorados: ignorados, invalidos: invalidos }
@@ -907,6 +998,7 @@
         provisoes: provisoesNovas,
         objetivos: objetivosNovos,
         posicoes: posicoesNovas,
+        passivos: passivosNovos,
         ignorados: ignorados,
         invalidos: invalidos
       };

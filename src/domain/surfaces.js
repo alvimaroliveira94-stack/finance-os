@@ -271,6 +271,27 @@
       linhas.push(linha('OBJETIVO', 'Nenhum objetivo registrado', { status: 'NULL', motivo: 'SEM_OBJETIVOS' }));
     }
 
+    // PASSIVO reusa as mesmas colunas de PROVISAO, espelhadas: alvo é o que
+    // foi assumido (valor_devido_original), acumulado é o que já foi
+    // amortizado, faltante é o saldo em aberto — a mesma relação
+    // alvo = acumulado + faltante que já vale para provisão, só que aqui o
+    // "alvo" caminha para trás em vez de para a frente. motivo carrega o
+    // credor: é o único dado extra que "credor, saldo aberto, vencimento,
+    // status" pede e que as colunas existentes não nomeiam.
+    (d.passivos || []).forEach(function (p) {
+      linhas.push(linha('PASSIVO', p.nome, {
+        status: p.status,
+        alvo: p.valor_devido_original,
+        acumulado: FOS.Core.round2(p.valor_devido_original - p.valor_aberto),
+        faltante: p.valor_aberto,
+        vencimento: p.vencimento || '',
+        motivo: p.credor || ''
+      }));
+    });
+    if (!(d.passivos || []).length) {
+      linhas.push(linha('PASSIVO', 'Nenhum passivo registrado', { status: 'NULL', motivo: 'SEM_PASSIVOS' }));
+    }
+
     linhas.push(linha('FECHAMENTO', 'Competência fechada', {
       status: d.estado, vencimento: d.competencia, motivo: d.qualidade.nivel
     }));

@@ -150,8 +150,8 @@ describe('Configuração (aba 00)', () => {
 });
 
 describe('Schema das abas', () => {
-  it('define as treze estruturas internas', () => {
-    assert.equal(FOS.Schema.nomes().length, 13);
+  it('define as quatorze estruturas internas', () => {
+    assert.equal(FOS.Schema.nomes().length, 14);
   });
 
   it('converte objeto para linha na ordem do schema', () => {

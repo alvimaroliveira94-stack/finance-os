@@ -126,6 +126,29 @@
       'total=' + total + '; por_categoria=' + porCategoria + '; sem_categoria=' + semCategoria.length);
   }
 
+  /**
+   * Saldo de cada versão de passivo dentro dos limites: nunca negativo,
+   * nunca acima do que foi assumido na origem. É o guardião contra
+   * comportamento não suportado (juro capitalizado que faça o saldo crescer
+   * sozinho, ou amortização que o leve abaixo de zero) — falha explícita em
+   * vez de número silenciosamente errado.
+   */
+  function passivosSaldoValido(linhas) {
+    var problemas = [];
+    (linhas || []).forEach(function (p) {
+      var aberto = FOS.Config.parseNumber(p.valor_aberto);
+      var original = FOS.Config.parseNumber(p.valor_devido_original);
+      if (aberto === null || original === null) {
+        problemas.push('VALOR_INVALIDO:' + p.passivo_id + '@v' + p.versao);
+        return;
+      }
+      if (aberto < 0 || aberto > original) {
+        problemas.push('FORA_DOS_LIMITES:' + p.passivo_id + '@v' + p.versao);
+      }
+    });
+    return res('PASSIVOS_SALDO_VALIDO', problemas.length === 0, problemas.join(',') || null);
+  }
+
   /** O fechamento anterior não pode ter mudado (checksum recalculado). */
   function fechamentoAnteriorImutavel(fechamentoAnterior, recalcularChecksum) {
     if (!fechamentoAnterior) return res('FECHAMENTO_ANTERIOR_IMUTAVEL', true, 'SEM_FECHAMENTO_ANTERIOR');
@@ -150,6 +173,8 @@
       taxaCambialDisponivel(ctx.taxa, ctx.exposicaoEstrangeira),
       subledgerVersionado(ctx.provisoesLinhas, 'provisao_id', 'PROVISOES_VERSIONADAS'),
       subledgerVersionado(ctx.objetivosLinhas, 'objetivo_id', 'OBJETIVOS_VERSIONADOS'),
+      subledgerVersionado(ctx.passivosLinhas, 'passivo_id', 'PASSIVOS_VERSIONADOS'),
+      passivosSaldoValido(ctx.passivosLinhas),
       somaCategorias(ctx.linhasCompetencia)
     ];
     if (ctx.fechamentoAnterior && ctx.recalcularChecksum) {
@@ -168,6 +193,7 @@
     snapshotsAtivos: snapshotsAtivos,
     taxaCambialDisponivel: taxaCambialDisponivel,
     subledgerVersionado: subledgerVersionado,
+    passivosSaldoValido: passivosSaldoValido,
     somaCategorias: somaCategorias,
     fechamentoAnteriorImutavel: fechamentoAnteriorImutavel,
     verificarTodas: verificarTodas
