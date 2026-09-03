@@ -43,11 +43,21 @@ function planilhaFake(opcoes) {
     },
     lerTabela(nome) {
       if (!abas[nome]) throw FOS.Core.DomainError('ABA_INEXISTENTE', 'Aba não encontrada: ' + nome);
-      return abas[nome].linhas.map((row) => FOS.Schema.toObject(
-        abas[nome].headers,
-        // Mesma normalização de fronteira do adaptador real.
-        row.map((celula) => FOS.Adapters.normalizarCelula(celula, {}))
-      ));
+      const headers = abas[nome].headers;
+      return abas[nome].linhas.map((row) => {
+        // Espelha o Sheets real: ler um range mais largo do que uma linha
+        // antiga jamais escreveu (aba populada sob um schema anterior, que
+        // ganhou colunas em append) devolve '' nas células nunca gravadas —
+        // nunca undefined. É o que faz uma coluna nova nascer vazia para
+        // linha antiga, em vez de "ausente" de um jeito que o domínio não
+        // tem como distinguir de um bug de leitura.
+        const completa = headers.map((_, i) => (row[i] === undefined ? '' : row[i]));
+        return FOS.Schema.toObject(
+          headers,
+          // Mesma normalização de fronteira do adaptador real.
+          completa.map((celula) => FOS.Adapters.normalizarCelula(celula, {}))
+        );
+      });
     },
     anexarLinhas(nome, objetos) {
       if (!objetos || !objetos.length) return 0;

@@ -699,3 +699,149 @@ describe('Passivo × Provisão: exclusão mútua no nível que o modelo garante'
       assert.equal(r.snapshot.vida.funcoes_do_dinheiro.passivos_abertos, 1000);
     });
 });
+
+/* ------------------------------------------------------------------ */
+/* Rollout brownfield: 11_EVENTOS_MANUAIS já populada sob o schema      */
+/* anterior (16 colunas, sem os campos de passivo)                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * As 16 colunas exatas, na ordem exata, do schema de produção anterior a
+ * este MVP (commit 57c0eb3). Esta lista é intencionalmente literal — não
+ * lida de FOS.Schema — porque o teste existe para provar que o schema
+ * ATUAL preserva este prefixo, e usar o próprio schema atual para gerar a
+ * lista tornaria o teste incapaz de detectar uma regressão nele.
+ */
+const COLUNAS_PRODUCAO_ANTERIOR = [
+  'evento_id', 'tipo_evento', 'data', 'conta_origem', 'conta_destino',
+  'valor', 'moeda', 'valor_origem_moeda', 'moeda_origem',
+  'descricao', 'referencia_id', 'status',
+  'fingerprint_conciliado', 'criado_em', 'criado_por', 'observacao'
+];
+
+/** Duas linhas sintéticas, valores distintos em toda coluna relevante —
+ *  qualquer transposição de coluna muda pelo menos uma dessas leituras. */
+const LINHA_ANTIGA_1 = [
+  'EV-OLD-1', 'SAQUE_TRADING', '2026-01-15', 'WISE', 'INTER_CC',
+  6000, 'BRL', 1000, 'GBP',
+  'Saque antigo sintetico', 'REF-OLD-1', 'CONCILIADO',
+  'FP-OLD-1', '2026-01-15T10:00:00Z', 'USUARIO', 'observacao antiga 1'
+];
+const LINHA_ANTIGA_2 = [
+  'EV-OLD-2', 'GASTO_EXTRAORDINARIO', '2026-01-16', 'INTER_CC', 'BETFAIR',
+  900, 'GBP', 150, 'BRL',
+  'Gasto antigo sintetico', 'REF-OLD-2', 'PENDENTE',
+  'FP-OLD-2', '2026-01-16T11:00:00Z', 'APPS_SCRIPT', 'observacao antiga 2'
+];
+
+/**
+ * Planta, por baixo do domínio, uma 11_EVENTOS_MANUAIS já populada sob o
+ * schema de produção anterior — exatamente o estado real descrito na
+ * auditoria de rollout (planilha existente, aba 11 com linhas reais,
+ * bundle antigo). Escreve direto em `planilha._abas`, contornando
+ * Bootstrap.inicializar, porque o objetivo é controlar o "antes" com
+ * precisão, não testar a instalação original.
+ */
+function comEventosManuaisNoSchemaAntigo() {
+  const ctx = dataset.montarWorkbook({ comDados: false });
+  ctx.planilha._abas[A.EVENTOS_MANUAIS] = {
+    headers: COLUNAS_PRODUCAO_ANTERIOR.slice(),
+    linhas: [LINHA_ANTIGA_1.slice(), LINHA_ANTIGA_2.slice()]
+  };
+  return ctx;
+}
+
+/** Lê a aba 11 pelo mesmo caminho que todo o sistema usa: cabeçalho vigente
+ *  zipado por posição com as linhas — é o ponto exato que corrompe se o
+ *  schema reordenar uma coluna existente. */
+function lerEventosManuaisCru(ctx) {
+  return ctx.planilha.lerTabela(A.EVENTOS_MANUAIS);
+}
+
+describe('Rollout brownfield: 11_EVENTOS_MANUAIS já populada', () => {
+  it('append-only: o prefixo de 16 colunas do schema atual é idêntico ao de produção',
+    { scenario: 'C54' }, () => {
+      const atuais = FOS.Schema.get(A.EVENTOS_MANUAIS).colunas;
+      assert.deep(atuais.slice(0, 16), COLUNAS_PRODUCAO_ANTERIOR,
+        'as 16 primeiras colunas não podem mudar de nome nem de ordem');
+      assert.deep(atuais.slice(16), ['valor_devido', 'vencimento', 'credor'],
+        'os três campos de passivo só podem vir depois das 16 antigas');
+    });
+
+  it('Preparar planilha sobre aba antiga: as 16 células antigas continuam sob os mesmos headers, com os mesmos valores',
+    { scenario: 'C54' }, () => {
+      const ctx = comEventosManuaisNoSchemaAntigo();
+      FOS.App.Bootstrap.inicializar({ planilha: ctx.planilha, repositorio: ctx.repositorio, auditoria: ctx.auditoria });
+
+      const cabecalhos = ctx.planilha.cabecalhos(A.EVENTOS_MANUAIS);
+      assert.deep(cabecalhos.slice(0, 16), COLUNAS_PRODUCAO_ANTERIOR,
+        'o cabeçalho físico continua com o prefixo antigo, na mesma ordem');
+
+      const linhas = lerEventosManuaisCru(ctx);
+      assert.equal(linhas.length, 2, 'nenhuma linha perdida nem duplicada');
+
+      const esperado1 = {};
+      COLUNAS_PRODUCAO_ANTERIOR.forEach((col, i) => { esperado1[col] = LINHA_ANTIGA_1[i]; });
+      const esperado2 = {};
+      COLUNAS_PRODUCAO_ANTERIOR.forEach((col, i) => { esperado2[col] = LINHA_ANTIGA_2[i]; });
+
+      COLUNAS_PRODUCAO_ANTERIOR.forEach((col) => {
+        assert.equal(String(linhas[0][col]), String(esperado1[col]),
+          'campo "' + col + '" da linha 1 mudou de valor — reinterpretação de dado real');
+        assert.equal(String(linhas[1][col]), String(esperado2[col]),
+          'campo "' + col + '" da linha 2 mudou de valor — reinterpretação de dado real');
+      });
+    });
+
+  it('as três colunas novas nascem no final, vazias para toda linha antiga',
+    { scenario: 'C54' }, () => {
+      const ctx = comEventosManuaisNoSchemaAntigo();
+      FOS.App.Bootstrap.inicializar({ planilha: ctx.planilha, repositorio: ctx.repositorio, auditoria: ctx.auditoria });
+
+      const cabecalhos = ctx.planilha.cabecalhos(A.EVENTOS_MANUAIS);
+      assert.deep(cabecalhos.slice(16), ['valor_devido', 'vencimento', 'credor']);
+
+      const linhas = lerEventosManuaisCru(ctx);
+      linhas.forEach((linha, i) => {
+        assert.equal(linha.valor_devido, '', 'linha antiga ' + (i + 1) + ' não pode ganhar valor_devido sozinha');
+        assert.equal(linha.vencimento, '', 'linha antiga ' + (i + 1) + ' não pode ganhar vencimento sozinha');
+        assert.equal(linha.credor, '', 'linha antiga ' + (i + 1) + ' não pode ganhar credor sozinho');
+      });
+    });
+
+  it('eventos antigos continuam válidos e reconciliáveis depois do rollout',
+    { scenario: 'C54' }, () => {
+      // Prova de ponta a ponta: não só o cabeçalho preserva o nome certo —
+      // o domínio lê os valores corretos e aceita o evento como sempre
+      // aceitou. Se o prefixo tivesse deslocado, isto teria falhado com
+      // VALOR_INVALIDO, CONTA_ORIGEM_DESCONHECIDA ou similar.
+      const ctx = comEventosManuaisNoSchemaAntigo();
+      FOS.App.Bootstrap.inicializar({ planilha: ctx.planilha, repositorio: ctx.repositorio, auditoria: ctx.auditoria });
+
+      const config = ctx.repositorio.config();
+      const eventos = ctx.repositorio.eventos();
+      const saque = eventos.filter((e) => e.evento_id === 'EV-OLD-1')[0];
+      assert.ok(saque, 'evento antigo precisa continuar legível pelo repositório');
+      assert.equal(saque.conta_origem, 'WISE');
+      assert.equal(saque.conta_destino, 'INTER_CC');
+      assert.equal(Number(saque.valor), 6000);
+      const r = FOS.Events.validar(saque, config);
+      assert.ok(r.ok, 'SAQUE_TRADING antigo precisa continuar válido: ' + JSON.stringify(r.erros));
+    });
+
+  it('Preparar planilha rodado de novo não move nem altera nada além do já estável',
+    { scenario: 'C54' }, () => {
+      const ctx = comEventosManuaisNoSchemaAntigo();
+      FOS.App.Bootstrap.inicializar({ planilha: ctx.planilha, repositorio: ctx.repositorio, auditoria: ctx.auditoria });
+      const primeiraLeitura = JSON.stringify(lerEventosManuaisCru(ctx));
+      const primeiroCabecalho = JSON.stringify(ctx.planilha.cabecalhos(A.EVENTOS_MANUAIS));
+
+      // Segunda "instalação" — mesmo bundle, mesmo comando, planilha já
+      // migrada. Idempotência: zero mutação semântica adicional.
+      FOS.App.Bootstrap.inicializar({ planilha: ctx.planilha, repositorio: ctx.repositorio, auditoria: ctx.auditoria });
+
+      assert.equal(JSON.stringify(lerEventosManuaisCru(ctx)), primeiraLeitura,
+        'segunda execução não pode alterar nenhuma célula da aba 11');
+      assert.equal(JSON.stringify(ctx.planilha.cabecalhos(A.EVENTOS_MANUAIS)), primeiroCabecalho);
+    });
+});

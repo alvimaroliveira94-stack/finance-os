@@ -624,23 +624,23 @@
     descricao: 'Os nove tipos de evento manual declarados pelo usuário.',
     chave: ['evento_id'],
     colunas: [
-      'evento_id', 'tipo_evento', 'data',
-      // vencimento é exclusivo de NOVO_PASSIVO: a data de quitação da
-      // obrigação, estruturalmente distinta de `data` (a data da
-      // movimentação bancária, usada na conciliação). Inativo/vazio em
-      // todo o resto do catálogo.
-      'vencimento',
-      'conta_origem', 'conta_destino',
-      // valor_devido é exclusivo de NOVO_PASSIVO: a obrigação total
-      // assumida, quando diferente do dinheiro efetivamente recebido
-      // (`valor`) — por exemplo, juros descontados na origem.
-      'valor', 'valor_devido', 'moeda', 'valor_origem_moeda', 'moeda_origem',
+      // Prefixo de 16 colunas, byte-a-byte idêntico e na mesma ordem do
+      // commit 57c0eb3 (produção). NUNCA reordenar nem inserir campo aqui:
+      // `criarAba` reescreve a linha 1 de qualquer aba já existente sem
+      // mover as linhas de dado abaixo dela (adapters/spreadsheet.js,
+      // `criarAba`). Numa aba de produção já populada, mudar a posição de
+      // uma coluna existente faz toda leitura seguinte (`lerTabela`, que
+      // zipa o cabeçalho vigente com as linhas por posição) reinterpretar
+      // dado real sob o rótulo errado — sem apagar nada, mas sem avisar.
+      // Colunas novas só entram DEPOIS deste prefixo (ver ADR 0009).
+      'evento_id', 'tipo_evento', 'data', 'conta_origem', 'conta_destino',
+      'valor', 'moeda', 'valor_origem_moeda', 'moeda_origem',
       'descricao', 'referencia_id', 'status',
-      // credor é exclusivo de NOVO_PASSIVO: quem é o dono do dinheiro
-      // devido. Estruturado, nunca derivado de descricao ou observacao —
-      // essas continuam livres para nome e anotação do passivo.
-      'credor',
-      'fingerprint_conciliado', 'criado_em', 'criado_por', 'observacao'
+      'fingerprint_conciliado', 'criado_em', 'criado_por', 'observacao',
+      // A partir daqui: exclusivas de NOVO_PASSIVO, sempre em append —
+      // numa aba já populada nascem vazias para toda linha existente, e
+      // nunca deslocam o prefixo acima.
+      'valor_devido', 'vencimento', 'credor'
     ]
   };
 
