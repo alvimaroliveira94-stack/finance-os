@@ -876,6 +876,41 @@ describe('Calibração: desativação de regras', () => {
     assert.throws(() => ctx.workflows.desativarRegras({ regraIds: [] }), 'REGRAS_NAO_INFORMADAS');
   });
 
+  it('alcance exato: só os ids explicitamente passados, nenhuma CAL-* incluída',
+    { scenario: 'C53' }, () => {
+      const ctx = montar();
+      const calibrada = Cal.linhaDeRegra({
+        regraId: 'CAL-0001', versao: 1, chave: S.FULANO, direcao: 'ENTRA',
+        categoria: 'CUSTO_VIDA', agora: dataset.AGORA, desde: '2026-02-01'
+      });
+      ctx.repositorio.anexar(A.REGRAS, [calibrada]);
+      const outraSemente = ctx.repositorio.regras().filter((r) => r.regra_id === 'R020')[0];
+
+      ctx.workflows.desativarRegras({ regraIds: ['R001', 'R900'], ator: 'USUARIO' });
+
+      assert.equal(FOS.Config.parseBool(
+        ctx.repositorio.regras().filter((r) => r.regra_id === 'CAL-0001')[0].ativo), true,
+        'regra calibrada não pode ser atingida por uma desativação de outra lista de ids');
+      assert.equal(FOS.Config.parseBool(
+        ctx.repositorio.regras().filter((r) => r.regra_id === 'R020')[0].ativo), true,
+        'regra de semente fora da lista pedida continua ativa');
+      assert.equal(outraSemente.vigente_ate, '', 'e sequer teve campo tocado');
+    });
+
+  it('auditoria: registra ator, entidade e os ids afetados', { scenario: 'C53' }, () => {
+    const ctx = montar();
+    ctx.workflows.desativarRegras({ regraIds: ['R001', 'R900'], motivo: 'TESTE_AUDITORIA', ator: 'USUARIO' });
+
+    const log = ctx.planilha.lerTabela(A.LOG);
+    const entrada = log.filter((e) => String(e.acao) === 'DESATIVAR_REGRAS').slice(-1)[0];
+
+    assert.ok(entrada, 'esperado um registro DESATIVAR_REGRAS na auditoria');
+    assert.equal(entrada.ator, 'USUARIO');
+    assert.equal(entrada.entidade, A.REGRAS);
+    assert.includes(entrada.entidade_id, 'R001');
+    assert.includes(entrada.entidade_id, 'R900');
+  });
+
   it('instalar ou preparar a planilha jamais desativa regra sozinho',
     { scenario: 'C53' }, () => {
       const ctx = montar();

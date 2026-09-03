@@ -8336,59 +8336,6 @@
     }
 
     /**
-     * As dez regras de semente sintéticas, geradas por App.Seed para o
-     * sistema ter algo a classificar antes da primeira calibração real.
-     *
-     * Lista literal e fechada — não um prefixo, faixa ou padrão — porque a
-     * migração que a usa precisa ser auditável por inspeção: qualquer
-     * humano lendo o código vê exatamente o que será atingido, sem precisar
-     * confiar em uma regra de descoberta.
-     */
-    var REGRAS_SEMENTE = ['R001', 'R010', 'R011', 'R020', 'R021', 'R022', 'R030', 'R040', 'R050', 'R900'];
-
-    /**
-     * Preview, só leitura, do que a aposentadoria das regras de semente
-     * afetaria — para mostrar antes de pedir a confirmação.
-     *
-     * `classificacoes` conta linhas correntes do ledger com aquele
-     * regra_id: é a evidência de quanto uma regra sintética já influenciou
-     * dinheiro real, e é por isso que a mutação exige preview antes de pedir
-     * a palavra de confirmação.
-     */
-    function previewAposentadoriaSemente() {
-      var regras = repo.regras();
-      var correntes = FOS.Ledger.visaoCorrente(repo.ledger());
-      return REGRAS_SEMENTE.map(function (id) {
-        var linha = regras.filter(function (r) { return String(r.regra_id) === id; })[0];
-        return {
-          regra_id: id,
-          encontrada: !!linha,
-          valor_referencia: linha ? String(linha.valor_referencia) : null,
-          categoria: linha ? String(linha.categoria) : null,
-          ativo: linha ? FOS.Config.parseBool(linha.ativo) : null,
-          classificacoes: correntes.filter(function (l) { return String(l.regra_id) === id; }).length
-        };
-      });
-    }
-
-    /**
-     * Migração única: aposenta as dez regras de semente sintéticas.
-     *
-     * Delega inteiramente a desativarRegras — mesma preservação de linha,
-     * mesma idempotência, mesma auditoria — com os dez ids literais desta
-     * função e nenhum outro. Uma regra CAL-* nunca aparece em REGRAS_SEMENTE,
-     * logo não há caminho por onde esta função a alcance.
-     */
-    function aposentarRegrasDeSemente(params) {
-      var p = params || {};
-      return desativarRegras({
-        regraIds: REGRAS_SEMENTE.slice(),
-        motivo: 'APOSENTADA_REGRA_SEMENTE_SINTETICA',
-        ator: p.ator || ator
-      });
-    }
-
-    /**
      * Estado das taxas relevantes para uma competência.
      *
      * Reporta DUAS taxas de propósito: o fechamento precisa da taxa da
@@ -8794,8 +8741,6 @@
       aplicarRegraCalibrada: aplicarRegraCalibrada,
       reprocessarFila: reprocessarFila,
       desativarRegras: desativarRegras,
-      previewAposentadoriaSemente: previewAposentadoriaSemente,
-      aposentarRegrasDeSemente: aposentarRegrasDeSemente,
       publicarTaxaCambio: publicarTaxaCambio,
       taxasPublicadas: taxasPublicadas,
       painel: painel,
@@ -9706,74 +9651,5 @@ function doGet() {
   return HtmlService.createHtmlOutput(_fosHtmlPainel(amb.workflows.painel(null, {})))
     .setTitle('Finance OS')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.DEFAULT);
-}
-
-/* ------------------------------------------------------------------ */
-/* Migração única — não é workflow permanente                          */
-/* ------------------------------------------------------------------ */
-
-/** Uma linha do preview de aposentadoria: id, status, referência, uso. */
-function _fosLinhaSemente(r) {
-  var status = r.encontrada ? (r.ativo ? 'ATIVA' : 'JA INATIVA') : 'NAO ENCONTRADA';
-  return '  ' + r.regra_id + '  ' + status
-    + '  ' + (r.categoria || '-')
-    + '  "' + (r.valor_referencia || '-') + '"'
-    + '  classificações históricas: ' + r.classificacoes;
-}
-
-/**
- * Migração única: aposenta as dez regras de semente sintéticas.
- *
- * Deliberadamente NÃO está em onOpen. As regras de semente foram andaime
- * de desenvolvimento, não decisão aprovada nem evidência operacional real —
- * mas desativá-las é uma mutação de regra financeira, e mutação de regra
- * financeira nunca acontece por instalar código. Execução é manual, uma
- * única vez, pelo editor do Apps Script (Executar > fosAposentarRegrasDeSemente),
- * com preview e confirmação textual antes de qualquer escrita.
- *
- * Depois de executada e validada em produção, esta função sai num commit
- * de limpeza — ela não tem lugar permanente na superfície.
- */
-function fosAposentarRegrasDeSemente() {
-  var ui = _fosUi();
-  var amb = _fosAmbiente();
-  var preview = amb.workflows.previewAposentadoriaSemente();
-
-  var linhas = [
-    'Aposenta as dez regras de semente sintéticas (R001, R010, R011, R020,',
-    'R021, R022, R030, R040, R050, R900) — andaime de desenvolvimento, não',
-    'decisão aprovada nem evidência operacional real.',
-    '',
-    'A linha de cada regra é preservada. Só ativo, vigente_ate e observação',
-    'mudam. Nenhuma regra CAL-* é afetada: esta migração não a conhece.',
-    ''
-  ];
-  preview.forEach(function (r) { linhas.push(_fosLinhaSemente(r)); });
-  linhas.push('');
-  linhas.push('Para confirmar, digite exatamente: APOSENTAR');
-
-  var resposta = ui.prompt('Aposentar regras de semente', linhas.join('\n'), ui.ButtonSet.OK_CANCEL);
-  if (resposta.getSelectedButton() !== ui.Button.OK) {
-    ui.alert('Aposentar regras de semente', 'Cancelado. Nada foi gravado.', ui.ButtonSet.OK);
-    return;
-  }
-  // Comparação exata, sem trim: a diretiva pede a palavra exata, e um
-  // espaço perdido não deveria decidir sozinho se uma regra financeira é
-  // desativada.
-  if (resposta.getResponseText() !== 'APOSENTAR') {
-    ui.alert('Aposentar regras de semente',
-      'Texto não confere: nada foi gravado. Para executar, digite exatamente APOSENTAR.',
-      ui.ButtonSet.OK);
-    return;
-  }
-
-  var r = amb.workflows.aposentarRegrasDeSemente({ ator: 'USUARIO' });
-  if (!r.alterado) {
-    ui.alert('Aposentar regras de semente',
-      'Nenhuma alteração: as regras de semente já estavam aposentadas.', ui.ButtonSet.OK);
-    return;
-  }
-  ui.alert('Aposentar regras de semente',
-    'Regras desativadas: ' + r.desativadas + ' de ' + r.regras.length + '.', ui.ButtonSet.OK);
 }
 
