@@ -296,6 +296,48 @@ function fosAbrirConfiguracao() {
   _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.CONFIGURACAO);
 }
 
+/** Uma linha da lista de escopo: número, volume, dinheiro e identidade. */
+function _fosLinhaResumo(r) {
+  var numero = String(r.numero);
+  while (numero.length < 3) numero = ' ' + numero;
+  var qtd = String(r.quantidade);
+  while (qtd.length < 3) qtd = ' ' + qtd;
+  return numero + '.  ' + qtd + ' item(ns)  ' + _fosValor(r.soma)
+    + '   ' + r.tipo + ' · ' + r.contraparte + ' · ' + r.direcao;
+}
+
+/**
+ * Diálogo de escopo: a lista numerada e como escolher.
+ *
+ * Vem antes de qualquer decisão porque decidir um grupo não pode custar
+ * responder a todos os outros. É leitura: nenhuma escrita acontece aqui.
+ */
+function _fosTextoSelecao(grupos) {
+  var linhas = [
+    grupos.length + ' grupo(s) de pendências abertas.',
+    '',
+    'Escolha o que decidir agora:',
+    '  7          um grupo',
+    '  2,7,11     vários grupos',
+    '  TODOS      todos eles',
+    '',
+    'Cancelar encerra sem gravar nada.',
+    ''
+  ];
+  FOS.Calibration.resumo(grupos).forEach(function (r) { linhas.push(_fosLinhaResumo(r)); });
+  return linhas.join('\n');
+}
+
+/** Traduz a recusa da seleção para linguagem humana, sem adivinhar intenção. */
+function _fosExplicarSelecao(erro, total) {
+  var partes = String(erro).split(':');
+  if (partes[0] === 'SELECAO_VAZIA') return 'Você não informou nenhum grupo.';
+  if (partes[0] === 'GRUPO_INEXISTENTE') {
+    return 'Não existe grupo ' + partes[1] + '. Os números vão de 1 a ' + total + '.';
+  }
+  return 'Não entendi "' + partes[1] + '". Use números separados por vírgula, ou TODOS.';
+}
+
 /** Uma linha de exemplo dentro do diálogo de calibração. */
 function _fosLinhaExemplo(e) {
   return '  ' + e.data + '  ' + _fosValor(e.valor) + '  ' + String(e.descricao || '').slice(0, 46);
@@ -358,9 +400,13 @@ function _fosTextoGrupo(grupo, indice, total) {
 /**
  * Calibrar classificação: única porta para ensinar o sistema a classificar.
  *
- * Percorre os grupos de pendências abertas, uma decisão por grupo, acumula
- * tudo e só aplica depois de uma confirmação única. Cancelar em qualquer
- * ponto antes dela não grava nada — nem regra, nem resolução.
+ * Duas etapas. Primeiro o escopo: a lista numerada dos grupos abertos e
+ * quais deles você quer decidir agora. Depois a decisão, um diálogo por
+ * grupo selecionado — e só por eles. Grupo fora da seleção não é perguntado
+ * nem tocado.
+ *
+ * Tudo é acumulado e só aplicado depois de uma confirmação única. Cancelar
+ * em qualquer ponto antes dela não grava nada — nem regra, nem resolução.
  *
  * Classificar não é aprender: escrever só a categoria resolve o mês; ensinar
  * exige a palavra APRENDER. A mesma contraparte pode ter naturezas
@@ -380,20 +426,40 @@ function fosCalibrarClassificacao() {
     return;
   }
 
+  var selecao = ui.prompt('Calibrar classificação — escopo',
+    _fosTextoSelecao(grupos), ui.ButtonSet.OK_CANCEL);
+  if (selecao.getSelectedButton() !== ui.Button.OK) {
+    ui.alert('Calibrar classificação',
+      'Encerrado por você. Nada foi gravado: nenhuma regra criada e nenhum item resolvido.',
+      ui.ButtonSet.OK);
+    return;
+  }
+  var escolha = FOS.Calibration.interpretarSelecao(grupos, selecao.getResponseText());
+  if (!escolha.ok) {
+    ui.alert('Seleção não entendida',
+      _fosExplicarSelecao(escolha.erro, grupos.length)
+      + '\n\nNada foi gravado. Abra o comando de novo para escolher outro escopo.',
+      ui.ButtonSet.OK);
+    return;
+  }
+  var selecionados = escolha.grupos;
+
   var decisoes = [];
   var naoEntendidas = [];
-  for (var i = 0; i < grupos.length; i++) {
+  for (var i = 0; i < selecionados.length; i++) {
+    // O número mostrado é o da lista de escopo, para você reconhecer o grupo
+    // que acabou de escolher — não a posição dentro da seleção.
     var resposta = ui.prompt('Calibrar classificação',
-      _fosTextoGrupo(grupos[i], i + 1, grupos.length), ui.ButtonSet.OK_CANCEL);
+      _fosTextoGrupo(selecionados[i], escolha.numeros[i], grupos.length), ui.ButtonSet.OK_CANCEL);
     if (resposta.getSelectedButton() !== ui.Button.OK) {
       ui.alert('Calibrar classificação',
         'Encerrado por você. Nada foi gravado: nenhuma regra criada e nenhum item resolvido.',
         ui.ButtonSet.OK);
       return;
     }
-    var leitura = FOS.Calibration.interpretarResposta(grupos[i], resposta.getResponseText());
+    var leitura = FOS.Calibration.interpretarResposta(selecionados[i], resposta.getResponseText());
     if (!leitura.ok) {
-      naoEntendidas.push(grupos[i].contraparte + ': ' + leitura.erro);
+      naoEntendidas.push(selecionados[i].contraparte + ': ' + leitura.erro);
       continue;
     }
     if (leitura.decisao.modo !== FOS.Calibration.MODO.PULAR) decisoes.push(leitura.decisao);

@@ -21,8 +21,10 @@
 const { describe, it, assert } = globalThis.__fosTest;
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const FOS = require('../_load');
 const dataset = require('../fixtures/dataset');
+const { uiFake } = require('../fixtures/fakes');
 
 const C = FOS.Constants;
 const A = C.ABAS_INTERNAS;
@@ -165,6 +167,42 @@ function categoriaDe(ctx, trecho) {
     .filter((l) => FOS.Normalize.descricao(l.descricao_origem).indexOf(trecho) !== -1);
   assert.ok(linhas.length, 'esperada linha no ledger para "' + trecho + '"');
   return linhas[0];
+}
+
+/**
+ * Roda o comando real de main.js contra um workbook em memória.
+ * Os dois únicos pontos de plataforma (`_fosUi` e `_fosAmbiente`) são
+ * substituídos; todo o resto do comando é o código que vai para produção.
+ */
+function rodarComando(ctx, respostas) {
+  const sandbox = vm.createContext({ FOS, console });
+  vm.runInContext(MAIN, sandbox, { filename: 'main.js' });
+  const ui = uiFake(respostas);
+  sandbox._fosUi = () => ui;
+  sandbox._fosAmbiente = () => ({
+    planilha: ctx.planilha,
+    repositorio: ctx.repositorio,
+    relogio: ctx.relogio,
+    ator: 'APPS_SCRIPT',
+    auditoria: ctx.auditoria,
+    workflows: ctx.workflows
+  });
+  sandbox.fosCalibrarClassificacao();
+  return ui;
+}
+
+/** Tudo que o comando poderia ter escrito, em texto estável. */
+function retrato(ctx) {
+  return JSON.stringify({
+    fila: ctx.repositorio.fila(),
+    ledger: ctx.repositorio.ledger(),
+    regras: ctx.repositorio.regras()
+  });
+}
+
+/** Diálogos de decisão (o de escopo tem título próprio). */
+function decisoes(ui) {
+  return ui.prompts('Calibrar classificação');
 }
 
 const S = {
@@ -893,5 +931,214 @@ describe('Calibração: superfície', () => {
       assert.equal(inedito.pode_aprender, true);
       assert.isNull(inedito.regra_vigente,
         'sem regra vigente o diálogo não pode oferecer CORRIGIR');
+    });
+});
+
+/* ------------------------------------------------------------------ */
+/* Escopo da sessão                                                    */
+/* ------------------------------------------------------------------ */
+
+describe('Calibração: seleção de escopo (domínio)', () => {
+  const grupos = [
+    { chave: 'A', tipo: 'PIX ENVIADO', contraparte: 'UM', direcao: 'SAI', quantidade: 2, soma: -10 },
+    { chave: 'B', tipo: 'PIX RECEBIDO', contraparte: 'DOIS', direcao: 'ENTRA', quantidade: 1, soma: 5 },
+    { chave: 'C', tipo: 'OUTRO', contraparte: 'TRES', direcao: 'SAI', quantidade: 3, soma: -30 }
+  ];
+
+  it('o resumo numera os grupos e carrega o que a decisão exige',
+    { scenario: 'C53' }, () => {
+      assert.deep(Cal.resumo(grupos), [
+        { numero: 1, quantidade: 2, tipo: 'PIX ENVIADO', contraparte: 'UM', direcao: 'SAI', soma: -10, chave: 'A' },
+        { numero: 2, quantidade: 1, tipo: 'PIX RECEBIDO', contraparte: 'DOIS', direcao: 'ENTRA', soma: 5, chave: 'B' },
+        { numero: 3, quantidade: 3, tipo: 'OUTRO', contraparte: 'TRES', direcao: 'SAI', soma: -30, chave: 'C' }
+      ]);
+    });
+
+  it('um grupo, vários grupos e TODOS', { scenario: 'C53' }, () => {
+    assert.deep(Cal.interpretarSelecao(grupos, '2').numeros, [2]);
+    assert.deep(Cal.interpretarSelecao(grupos, '1,3').numeros, [1, 3]);
+    assert.deep(Cal.interpretarSelecao(grupos, ' 3 , 1 ').numeros, [1, 3]);
+    assert.deep(Cal.interpretarSelecao(grupos, 'TODOS').numeros, [1, 2, 3]);
+    assert.deep(Cal.interpretarSelecao(grupos, 'todos').grupos.map((g) => g.chave), ['A', 'B', 'C']);
+    assert.deep(Cal.interpretarSelecao(grupos, '3,1').grupos.map((g) => g.chave), ['A', 'C']);
+  });
+
+  it('índices repetidos são deduplicados, não recusados', { scenario: 'C53' }, () => {
+    assert.deep(Cal.interpretarSelecao(grupos, '2,2,2').numeros, [2]);
+    assert.deep(Cal.interpretarSelecao(grupos, '3,1,3,1').numeros, [1, 3]);
+  });
+
+  it('entrada inválida é recusada com motivo, nunca interpretada por aproximação',
+    { scenario: 'C53' }, () => {
+      assert.equal(Cal.interpretarSelecao(grupos, '').erro, 'SELECAO_VAZIA');
+      assert.equal(Cal.interpretarSelecao(grupos, '   ').erro, 'SELECAO_VAZIA');
+      assert.equal(Cal.interpretarSelecao(grupos, '4').erro, 'GRUPO_INEXISTENTE:4');
+      assert.equal(Cal.interpretarSelecao(grupos, '0').erro, 'GRUPO_INEXISTENTE:0');
+      assert.equal(Cal.interpretarSelecao(grupos, '1,9').erro, 'GRUPO_INEXISTENTE:9');
+      assert.equal(Cal.interpretarSelecao(grupos, 'abc').erro, 'SELECAO_INVALIDA:abc');
+      assert.equal(Cal.interpretarSelecao(grupos, '-1').erro, 'SELECAO_INVALIDA:-1');
+      assert.equal(Cal.interpretarSelecao(grupos, '1,x').erro, 'SELECAO_INVALIDA:x');
+      assert.equal(Cal.interpretarSelecao(grupos, 'TODO').erro, 'SELECAO_INVALIDA:TODO',
+        '"TODO" não é "TODOS": aproximação em comando que grava é inaceitável');
+      assert.equal(Cal.interpretarSelecao(grupos, '1.5').erro, 'SELECAO_INVALIDA:1.5');
+    });
+
+  it('uma recusa não seleciona nada: não há seleção parcial', { scenario: 'C53' }, () => {
+    const r = Cal.interpretarSelecao(grupos, '1,2,99');
+    assert.notOk(r.ok);
+    assert.equal(r.numeros, undefined);
+    assert.equal(r.grupos, undefined);
+  });
+});
+
+describe('Calibração: seleção de escopo (comando)', () => {
+  it('a primeira pergunta é o escopo, com a lista numerada e legível',
+    { scenario: 'C53' }, () => {
+      const ctx = comHistoricoEMesCorrente();
+      const grupos = ctx.workflows.gruposDeCalibracao();
+      const ui = rodarComando(ctx, [null]);
+
+      const escopo = ui.prompts('Calibrar classificação — escopo');
+      assert.equal(escopo.length, 1, 'o escopo é perguntado uma vez, antes de tudo');
+      assert.equal(ui.dialogos[0].titulo, 'Calibrar classificação — escopo');
+
+      const texto = escopo[0].texto;
+      assert.includes(texto, '8 grupo(s) de pendências abertas.');
+      assert.includes(texto, 'TODOS');
+      grupos.forEach((g, i) => {
+        const linha = texto.split('\n').filter((l) => l.indexOf(String(i + 1) + '.  ') !== -1)[0];
+        assert.ok(linha, 'faltou a linha do grupo ' + (i + 1));
+        assert.includes(linha, g.tipo);
+        assert.includes(linha, g.contraparte);
+        assert.includes(linha, g.direcao);
+        assert.includes(linha, String(g.quantidade) + ' item(ns)');
+        assert.includes(linha, Number(g.soma).toFixed(2));
+      });
+    });
+
+  it('selecionar um grupo pergunta só por ele', { scenario: 'C53' }, () => {
+    const ctx = comHistoricoEMesCorrente();
+    const grupos = ctx.workflows.gruposDeCalibracao();
+    const alvo = grupos.map((g) => g.chave).indexOf(S.FULANO) + 1;
+
+    const ui = rodarComando(ctx, [String(alvo), 'TRANSFERENCIA_INTERNA APRENDER', true]);
+
+    const perguntados = decisoes(ui);
+    assert.equal(perguntados.length, 1, 'um grupo selecionado, um diálogo de decisão');
+    assert.includes(perguntados[0].texto, 'FULANO DE TAL · ENTRA');
+    assert.includes(perguntados[0].texto, 'Grupo ' + alvo + ' de 8',
+      'o número mostrado é o da lista de escopo, para você reconhecer o grupo');
+    assert.equal(regrasCal(ctx).length, 1);
+  });
+
+  it('selecionar vários pergunta por todos eles, e só por eles',
+    { scenario: 'C53' }, () => {
+      const ctx = comHistoricoEMesCorrente();
+      const grupos = ctx.workflows.gruposDeCalibracao();
+      const a = grupos.map((g) => g.chave).indexOf(S.FULANO) + 1;
+      const b = grupos.map((g) => g.chave).indexOf(S.MERCADINHO) + 1;
+
+      const ui = rodarComando(ctx, [
+        [a, b].sort((x, y) => x - y).join(','),
+        'TRANSFERENCIA_INTERNA APRENDER', 'CUSTO_VIDA', true
+      ]);
+
+      const perguntados = decisoes(ui);
+      assert.equal(perguntados.length, 2);
+      const chavesPerguntadas = perguntados.map((d) => d.texto);
+      assert.ok(chavesPerguntadas.some((t) => t.indexOf('FULANO DE TAL · ENTRA') !== -1));
+      assert.ok(chavesPerguntadas.some((t) => t.indexOf('MERCADINHO XPTO · SAI') !== -1));
+      assert.equal(chavesPerguntadas.filter((t) => t.indexOf('SICRANO') !== -1).length, 0);
+    });
+
+  it('TODOS pergunta por todos os grupos', { scenario: 'C53' }, () => {
+    const ctx = comHistoricoEMesCorrente();
+    const total = ctx.workflows.gruposDeCalibracao().length;
+    const roteiro = ['TODOS'].concat(new Array(total).fill('PULAR'));
+
+    const ui = rodarComando(ctx, roteiro);
+    assert.equal(decisoes(ui).length, total);
+  });
+
+  it('cancelar na seleção não grava nada', { scenario: 'C53' }, () => {
+    const ctx = comHistoricoEMesCorrente();
+    const antes = retrato(ctx);
+    const ui = rodarComando(ctx, [null]);
+
+    assert.equal(decisoes(ui).length, 0, 'cancelar no escopo não pergunta nenhuma decisão');
+    assert.equal(retrato(ctx), antes, 'nenhuma escrita: fila, ledger e regras intactos');
+    assert.equal(ui.alerts().length, 1);
+    assert.equal(ui.alerts()[0].titulo, 'Calibrar classificação',
+      'cancelar é encerramento deliberado, não erro de digitação');
+    assert.equal(ui.alerts('Seleção não entendida').length, 0);
+    assert.includes(ui.alerts()[0].texto, 'Encerrado por você');
+    assert.includes(ui.alerts()[0].texto, 'Nada foi gravado');
+  });
+
+  it('entrada inválida encerra com erro claro e sem escrever', { scenario: 'C53' }, () => {
+    const ctx = comHistoricoEMesCorrente();
+    const antes = retrato(ctx);
+
+    [['abc'], ['99'], ['0'], ['1,x'], ['TODO'], ['']].forEach((roteiro) => {
+      const ui = rodarComando(ctx, roteiro);
+      assert.equal(decisoes(ui).length, 0, 'nenhuma decisão é perguntada: ' + roteiro[0]);
+      const erro = ui.alerts('Seleção não entendida')[0];
+      assert.ok(erro, 'esperado alerta de seleção não entendida para: ' + roteiro[0]);
+      assert.includes(erro.texto, 'Nada foi gravado');
+      assert.equal(retrato(ctx), antes, 'nenhuma escrita após entrada inválida');
+    });
+
+    assert.includes(rodarComando(ctx, ['99']).alerts('Seleção não entendida')[0].texto,
+      'Os números vão de 1 a 8');
+    assert.includes(rodarComando(ctx, ['abc']).alerts('Seleção não entendida')[0].texto,
+      'Não entendi "abc"');
+  });
+
+  it('índices repetidos não perguntam o mesmo grupo duas vezes', { scenario: 'C53' }, () => {
+    const ctx = comHistoricoEMesCorrente();
+    const alvo = ctx.workflows.gruposDeCalibracao().map((g) => g.chave).indexOf(S.FULANO) + 1;
+    const ui = rodarComando(ctx, [[alvo, alvo, alvo].join(','), 'TRANSFERENCIA_INTERNA', true]);
+    assert.equal(decisoes(ui).length, 1);
+  });
+
+  it('grupo não selecionado não sofre alteração alguma', { scenario: 'C53' }, () => {
+    const ctx = comHistoricoEMesCorrente();
+    const grupos = ctx.workflows.gruposDeCalibracao();
+    const alvo = grupos.map((g) => g.chave).indexOf(S.FULANO) + 1;
+    const naoSelecionados = grupos.filter((g) => g.chave !== S.FULANO);
+
+    const itensAntes = {};
+    ctx.repositorio.fila().forEach((i) => { itensAntes[String(i.item_id)] = JSON.stringify(i); });
+    const ledgerAntes = ctx.repositorio.ledger().length;
+
+    rodarComando(ctx, [String(alvo), 'TRANSFERENCIA_INTERNA APRENDER', true]);
+
+    naoSelecionados.forEach((g) => {
+      g.itens.forEach((id) => {
+        const agora = ctx.repositorio.fila().filter((i) => String(i.item_id) === id)[0];
+        assert.equal(JSON.stringify(agora), itensAntes[id],
+          'item do grupo não selecionado alterado: ' + id);
+      });
+    });
+
+    const chavesAtuais = ctx.workflows.gruposDeCalibracao().map((g) => g.chave);
+    naoSelecionados.forEach((g) => {
+      assert.includes(chavesAtuais, g.chave, 'grupo não selecionado sumiu da fila: ' + g.chave);
+    });
+    assert.equal(regrasCal(ctx).length, 1, 'só a regra do grupo selecionado nasceu');
+    assert.equal(regrasCal(ctx)[0].valor_referencia, S.FULANO);
+    assert.equal(ctx.repositorio.ledger().length, ledgerAntes + 2,
+      'só as duas linhas do grupo selecionado entraram no ledger');
+  });
+
+  it('recusar a confirmação final não grava nada, mesmo com decisões tomadas',
+    { scenario: 'C53' }, () => {
+      const ctx = comHistoricoEMesCorrente();
+      const alvo = ctx.workflows.gruposDeCalibracao().map((g) => g.chave).indexOf(S.FULANO) + 1;
+      const antes = retrato(ctx);
+
+      rodarComando(ctx, [String(alvo), 'TRANSFERENCIA_INTERNA APRENDER', false]);
+      assert.equal(retrato(ctx), antes,
+        'nenhuma escrita acontece antes da confirmação única');
     });
 });

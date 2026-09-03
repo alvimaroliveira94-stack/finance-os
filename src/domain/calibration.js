@@ -71,6 +71,9 @@
     PULAR: 'PULAR'
   };
 
+  /** Palavra única que seleciona todos os grupos. Exata, sem aproximação. */
+  var SELECAO_TODOS = 'TODOS';
+
   function textoNormalizado(linha) {
     var direto = linha.descricao_normalizada;
     if (direto !== undefined && direto !== null && String(direto) !== '') return String(direto);
@@ -374,6 +377,76 @@
   }
 
   /**
+   * Resumo numerado dos grupos, para a escolha de escopo.
+   *
+   * O número é a posição na lista mostrada, e é ele que o usuário digita.
+   * Nada aqui formata texto: a superfície decide como exibir.
+   */
+  function resumo(grupos) {
+    return (grupos || []).map(function (g, i) {
+      return {
+        numero: i + 1,
+        quantidade: g.quantidade,
+        tipo: g.tipo,
+        contraparte: g.contraparte,
+        direcao: g.direcao,
+        soma: g.soma,
+        chave: g.chave
+      };
+    });
+  }
+
+  /**
+   * Escopo da sessão de calibração: quais grupos entram nos diálogos.
+   *
+   * Existe porque decidir um grupo não pode custar responder a todos os
+   * outros. É seleção, não decisão: nada aqui classifica nem cria regra.
+   *
+   *   7          um grupo
+   *   2,7,11     vários
+   *   TODOS      todos
+   *
+   * Estrita de propósito: número fora da lista e texto que não seja número
+   * são recusados com motivo, nunca interpretados por aproximação. Repetido
+   * é deduplicado — pedir o mesmo grupo duas vezes é redundância, não erro.
+   *
+   * @returns {{ok:boolean, numeros?:Array<number>, grupos?:Array<Object>, erro?:string}}
+   */
+  function interpretarSelecao(grupos, texto) {
+    var lista = grupos || [];
+    var bruto = String(texto === undefined || texto === null ? '' : texto).trim();
+    if (!bruto) return { ok: false, erro: 'SELECAO_VAZIA' };
+
+    if (bruto.toUpperCase() === SELECAO_TODOS) {
+      return {
+        ok: true,
+        numeros: lista.map(function (g, i) { return i + 1; }),
+        grupos: lista.slice()
+      };
+    }
+
+    var partes = bruto.split(/[\s,]+/).filter(function (t) { return t !== ''; });
+    var vistos = {};
+    var numeros = [];
+    for (var i = 0; i < partes.length; i++) {
+      var t = partes[i];
+      if (!/^[0-9]+$/.test(t)) return { ok: false, erro: 'SELECAO_INVALIDA:' + t };
+      var n = Number(t);
+      if (n < 1 || n > lista.length) return { ok: false, erro: 'GRUPO_INEXISTENTE:' + t };
+      if (vistos[n]) continue;
+      vistos[n] = true;
+      numeros.push(n);
+    }
+    if (!numeros.length) return { ok: false, erro: 'SELECAO_VAZIA' };
+    numeros.sort(function (a, b) { return a - b; });
+    return {
+      ok: true,
+      numeros: numeros,
+      grupos: numeros.map(function (n) { return lista[n - 1]; })
+    };
+  }
+
+  /**
    * Converte a resposta do usuário na decisão sobre um grupo.
    *
    * A gramática torna a persistência a opção mais cara de digitar, de
@@ -435,6 +508,7 @@
     TIPOS: TIPOS,
     ESTADO: ESTADO,
     MODO: MODO,
+    SELECAO_TODOS: SELECAO_TODOS,
     assinatura: assinatura,
     sinalDaDirecao: sinalDaDirecao,
     agrupar: agrupar,
@@ -444,6 +518,8 @@
     versaoDe: versaoDe,
     proximoId: proximoId,
     avaliarPersistencia: avaliarPersistencia,
+    resumo: resumo,
+    interpretarSelecao: interpretarSelecao,
     interpretarResposta: interpretarResposta,
     linhaDeRegra: linhaDeRegra,
     camposDeDesativacao: camposDeDesativacao

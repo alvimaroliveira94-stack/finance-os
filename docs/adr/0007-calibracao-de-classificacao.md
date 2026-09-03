@@ -87,6 +87,15 @@ longo do tempo. Assumir que uma classificação vale para sempre é exatamente a
 suposição que produz regra errada. Persistência precisa ser conquistada, não
 herdada da primeira decisão.
 
+**Escopo explícito antes da decisão.** O comando pergunta primeiro *quais*
+grupos decidir — um, vários ou todos — e só então abre os diálogos dos
+selecionados. O primeiro desenho percorria os grupos em sequência, o que fazia
+uma decisão custar responder a todos os outros. A seleção é estrita: número
+fora da lista e texto que não seja número são recusados com motivo, nunca
+interpretados por aproximação; repetido é deduplicado. Grupo fora da seleção
+não é perguntado nem tocado. Nada disso altera o domínio da classificação nem
+a semântica das regras — é escopo de sessão, não decisão financeira.
+
 ## 4. Cinco portões para a confiança 1,0
 
 **Decisão.** Uma regra calibrada nasce com `confianca = 1` — ou seja,

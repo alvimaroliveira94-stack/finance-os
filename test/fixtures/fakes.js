@@ -143,4 +143,51 @@ function urlFetchFake(respostas) {
   };
 }
 
-module.exports = { planilhaFake, driveFake, urlFetchFake, comoCelulaDoSheets };
+/**
+ * Ui do Apps Script em memória, dirigida por um roteiro de respostas.
+ *
+ * Cada entrada do roteiro atende ao próximo diálogo que pede resposta:
+ *   'texto'  -> prompt respondido com esse texto (botão OK)
+ *   null     -> prompt cancelado
+ *   true     -> alert YES_NO confirmado
+ *   false    -> alert YES_NO recusado
+ * Alert informativo (ButtonSet.OK) não consome roteiro.
+ *
+ * Todos os diálogos ficam em `dialogos`, na ordem: é assim que os testes
+ * provam o que foi perguntado, e o que não foi.
+ */
+function uiFake(respostas) {
+  const roteiro = (respostas || []).slice();
+  const dialogos = [];
+  return {
+    ButtonSet: { OK: 'OK', OK_CANCEL: 'OK_CANCEL', YES_NO: 'YES_NO' },
+    Button: { OK: 'OK', CANCEL: 'CANCEL', YES: 'YES', NO: 'NO' },
+    dialogos,
+    prompts(titulo) {
+      return dialogos.filter((d) => d.tipo === 'prompt'
+        && (titulo === undefined || d.titulo === titulo));
+    },
+    alerts(titulo) {
+      return dialogos.filter((d) => d.tipo === 'alert'
+        && (titulo === undefined || d.titulo === titulo));
+    },
+    prompt(titulo, texto) {
+      if (!roteiro.length) throw new Error('diálogo sem resposta no roteiro: ' + titulo);
+      const r = roteiro.shift();
+      dialogos.push({ tipo: 'prompt', titulo, texto });
+      const cancelou = r === null;
+      return {
+        getSelectedButton: () => (cancelou ? 'CANCEL' : 'OK'),
+        getResponseText: () => (cancelou ? '' : String(r))
+      };
+    },
+    alert(titulo, texto, botoes) {
+      dialogos.push({ tipo: 'alert', titulo, texto, botoes });
+      if (botoes !== 'YES_NO') return 'OK';
+      if (!roteiro.length) throw new Error('confirmação sem resposta no roteiro: ' + titulo);
+      return roteiro.shift() === false ? 'NO' : 'YES';
+    }
+  };
+}
+
+module.exports = { planilhaFake, driveFake, urlFetchFake, uiFake, comoCelulaDoSheets };
