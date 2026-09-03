@@ -636,6 +636,10 @@
       // (`valor`) — por exemplo, juros descontados na origem.
       'valor', 'valor_devido', 'moeda', 'valor_origem_moeda', 'moeda_origem',
       'descricao', 'referencia_id', 'status',
+      // credor é exclusivo de NOVO_PASSIVO: quem é o dono do dinheiro
+      // devido. Estruturado, nunca derivado de descricao ou observacao —
+      // essas continuam livres para nome e anotação do passivo.
+      'credor',
       'fingerprint_conciliado', 'criado_em', 'criado_por', 'observacao'
     ]
   };
@@ -2528,6 +2532,8 @@
    *  exigeVencimento   — precisa de `vencimento` ISO, distinto de `data`
    *  usaValorDevido    — `valor_devido`, quando informado, é a obrigação
    *                       total (pode divergir de `valor`, o caixa recebido)
+   *  exigeCredor       — precisa de `credor` — quem é o dono do dinheiro
+   *                       devido, estruturado, nunca derivado de outro campo
    */
   var SPEC = {};
   SPEC[T.SAQUE_TRADING] = {
@@ -2573,15 +2579,16 @@
     concilia: true, sinalEsperado: 'CREDITO', contaConciliacao: 'conta_destino',
     exigeReferencia: true, categoriaEsperada: C.CATEGORIA.MOVIMENTACAO_COM_TERCEIRO,
     universoOrigem: null, universoDestino: C.UNIVERSO.VIDA,
-    exigeVencimento: true, usaValorDevido: true
+    exigeVencimento: true, usaValorDevido: true, exigeCredor: true
   };
   // Quitação/amortização: reduz o saldo devedor pelo próprio `valor` pago.
   // Não tem vencimento próprio — é o passivo referenciado que já o carrega.
+  // Também não pede credor: o credor já está registrado no nascimento.
   SPEC[T.AMORTIZACAO_PASSIVO] = {
     concilia: true, sinalEsperado: 'DEBITO', contaConciliacao: 'conta_origem',
     exigeReferencia: true, categoriaEsperada: C.CATEGORIA.MOVIMENTACAO_COM_TERCEIRO,
     universoOrigem: C.UNIVERSO.VIDA, universoDestino: null,
-    exigeVencimento: false, usaValorDevido: false
+    exigeVencimento: false, usaValorDevido: false, exigeCredor: false
   };
 
   function spec(tipo) {
@@ -2628,6 +2635,11 @@
     }
     if (s.exigeReferencia && String(evento.referencia_id || '').trim() === '') {
       erros.push({ codigo: 'REFERENCIA_OBRIGATORIA', detalhe: tipo + ' exige referencia_id' });
+    }
+    // credor é campo estruturado próprio — nunca derivado de descricao ou
+    // observacao. Sem ele, NOVO_PASSIVO fica sem dono declarado da dívida.
+    if (s.exigeCredor && String(evento.credor || '').trim() === '') {
+      erros.push({ codigo: 'CREDOR_OBRIGATORIO', detalhe: tipo + ' exige credor' });
     }
     // vencimento é estruturalmente distinto de `data`: `data` é a movimentação
     // bancária (usada na conciliação), `vencimento` é quando a obrigação
@@ -7917,10 +7929,10 @@
             passivo_id: referencia,
             versao: 1,
             nome: evento.descricao || referencia,
-            // Reusa observacao do evento para o credor, no mesmo padrão que
-            // NOVA_OBRIGACAO já usa observacao para prioridade: campo livre
-            // do evento, estruturado no destino. Nunca usado em cálculo.
-            credor: evento.observacao || '',
+            // Campo estruturado próprio — cópia direta de evento.credor,
+            // nunca de descricao nem de observacao. FOS.Events.validar já
+            // recusou o evento se credor vier vazio (exigeCredor).
+            credor: evento.credor,
             valor_devido_original: valorDevido,
             valor_aberto: valorDevido,
             moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
@@ -7930,7 +7942,9 @@
             vigente_ate: '',
             criado_em: agora,
             motivo_versao: 'CRIADO_POR_EVENTO:' + evento.evento_id,
-            observacao: ''
+            // observacao chega separada do credor: é a anotação livre do
+            // passivo (termos do empréstimo), não o dono da dívida.
+            observacao: evento.observacao || ''
           });
           return;
         }

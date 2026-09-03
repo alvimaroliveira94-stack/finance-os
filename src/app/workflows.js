@@ -888,10 +888,10 @@
             passivo_id: referencia,
             versao: 1,
             nome: evento.descricao || referencia,
-            // Reusa observacao do evento para o credor, no mesmo padrão que
-            // NOVA_OBRIGACAO já usa observacao para prioridade: campo livre
-            // do evento, estruturado no destino. Nunca usado em cálculo.
-            credor: evento.observacao || '',
+            // Campo estruturado próprio — cópia direta de evento.credor,
+            // nunca de descricao nem de observacao. FOS.Events.validar já
+            // recusou o evento se credor vier vazio (exigeCredor).
+            credor: evento.credor,
             valor_devido_original: valorDevido,
             valor_aberto: valorDevido,
             moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
@@ -901,7 +901,9 @@
             vigente_ate: '',
             criado_em: agora,
             motivo_versao: 'CRIADO_POR_EVENTO:' + evento.evento_id,
-            observacao: ''
+            // observacao chega separada do credor: é a anotação livre do
+            // passivo (termos do empréstimo), não o dono da dívida.
+            observacao: evento.observacao || ''
           });
           return;
         }

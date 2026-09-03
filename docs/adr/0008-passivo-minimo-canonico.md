@@ -105,18 +105,49 @@ texto livre é o tipo de fragilidade que todo o resto do domínio evita
 nove — mas evita todas as alternativas piores: sobrecarga de campo,
 conciliação quebrada, ou parsing de texto livre.
 
-## 6. `credor` reusa `observacao`, no mesmo precedente que já existe para `prioridade`
+## 6. `credor`: campo estruturado próprio, não reuso de `observacao`
 
-**Decisão.** `33_PASSIVOS.credor` vem de `evento.observacao`; `33_PASSIVOS.nome`
-vem de `evento.descricao`. Nenhuma coluna nova para isso.
+**Decisão revisada.** `33_PASSIVOS.credor` vem de uma décima coluna
+estruturada em `11_EVENTOS_MANUAIS`, `credor`, obrigatória só para
+`NOVO_PASSIVO` (`exigeCredor` no `SPEC`). `33_PASSIVOS.nome` continua vindo
+de `evento.descricao`, e `33_PASSIVOS.observacao` passa a vir de
+`evento.observacao` — as duas colunas de `33_PASSIVOS` deixam de competir
+por um único campo de origem.
 
-**Porquê é reuso, não invenção.** `NOVA_OBRIGACAO` já faz exatamente este
-movimento — `prioridade: FOS.Config.parseNumber(evento.observacao) || 5` —
-reaproveitando o campo livre do evento como um campo estruturado do
-subledger de destino, para um tipo de evento específico. `credor` segue o
-mesmo padrão, com uma diferença que baixa o risco: nunca é lido por cálculo
-ou invariante, só exibido. Diferente de `vencimento`, isto não trava a
-implementação — é o mesmo movimento que o código já fazia, uma vez a mais.
+**A decisão original desta seção foi implementada e revertida no mesmo
+commit em que este ADR nasceu.** A primeira versão reaproveitava
+`evento.observacao` para `credor`, no mesmo padrão que `NOVA_OBRIGACAO` já
+usa para `prioridade` (`workflows.js`:
+`FOS.Config.parseNumber(evento.observacao) || 5`). Uma auditoria read-only
+pediu antes do deploy mostrou por que o paralelo não se sustenta: em
+`NOVA_OBRIGACAO`, `observacao` não tem concorrente — é o único dado extra
+que uma provisão leva. Em `NOVO_PASSIVO`, a arquitetura aprovada já
+reservava **duas** colunas de destino (`credor` e `observacao`) para o
+mesmo `33_PASSIVOS`, mas só havia **um** campo livre de origem
+(`evento.observacao`). A cópia era integral, sem parsing — `credor`
+chegava correto — mas `evento.observacao` só podia servir a um dos dois
+destinos por vez, e `33_PASSIVOS.observacao` ficava permanentemente vazio:
+nenhuma linha de código, em nenhum dos dois branches de materialização,
+jamais escrevia nele. Duas verdades que a arquitetura queria lado a lado
+(quem é o credor; que anotações existem sobre o empréstimo) competiam pelo
+mesmo campo, e uma delas perdia sempre — violação de Single Truth
+Ownership, mesmo sem duplicação nem corrupção de dado.
+
+**Por que uma coluna nova, e não outro reuso.** Nenhum campo remanescente
+de `11_EVENTOS_MANUAIS` estava livre e sem concorrência: `descricao` já vira
+`nome`; `valor_origem_moeda`/`moeda_origem` já têm dono no P&L de trading em
+GBP (item 5); `observacao` acabara de se mostrar concorrido. `credor` é a
+única informação nova, estruturada e de leitura simples (nunca parseada,
+nunca usada em cálculo ou invariante) — exatamente o perfil de campo que
+merece coluna própria, no mesmo padrão condicional que `vencimento` e
+`valor_devido` já seguem: existe para todos os nove tipos de evento, é
+exigido e lido só por um.
+
+**Custo aceito.** Mais uma coluna na aba 11 — a terceira que este ADR
+acrescenta (depois de `vencimento` e `valor_devido`), para um único tipo de
+evento entre nove. Aceito pela mesma razão do item 5: a alternativa (reuso
+com concorrência) já se provou, na prática, gerar uma coluna morta em
+`33_PASSIVOS` e um limite real de expressividade, não uma economia de fato.
 
 ## 7. Dedução integral no disponível, nunca proporcional ao prazo
 

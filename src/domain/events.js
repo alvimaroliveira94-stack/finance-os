@@ -26,6 +26,8 @@
    *  exigeVencimento   — precisa de `vencimento` ISO, distinto de `data`
    *  usaValorDevido    — `valor_devido`, quando informado, é a obrigação
    *                       total (pode divergir de `valor`, o caixa recebido)
+   *  exigeCredor       — precisa de `credor` — quem é o dono do dinheiro
+   *                       devido, estruturado, nunca derivado de outro campo
    */
   var SPEC = {};
   SPEC[T.SAQUE_TRADING] = {
@@ -71,15 +73,16 @@
     concilia: true, sinalEsperado: 'CREDITO', contaConciliacao: 'conta_destino',
     exigeReferencia: true, categoriaEsperada: C.CATEGORIA.MOVIMENTACAO_COM_TERCEIRO,
     universoOrigem: null, universoDestino: C.UNIVERSO.VIDA,
-    exigeVencimento: true, usaValorDevido: true
+    exigeVencimento: true, usaValorDevido: true, exigeCredor: true
   };
   // Quitação/amortização: reduz o saldo devedor pelo próprio `valor` pago.
   // Não tem vencimento próprio — é o passivo referenciado que já o carrega.
+  // Também não pede credor: o credor já está registrado no nascimento.
   SPEC[T.AMORTIZACAO_PASSIVO] = {
     concilia: true, sinalEsperado: 'DEBITO', contaConciliacao: 'conta_origem',
     exigeReferencia: true, categoriaEsperada: C.CATEGORIA.MOVIMENTACAO_COM_TERCEIRO,
     universoOrigem: C.UNIVERSO.VIDA, universoDestino: null,
-    exigeVencimento: false, usaValorDevido: false
+    exigeVencimento: false, usaValorDevido: false, exigeCredor: false
   };
 
   function spec(tipo) {
@@ -126,6 +129,11 @@
     }
     if (s.exigeReferencia && String(evento.referencia_id || '').trim() === '') {
       erros.push({ codigo: 'REFERENCIA_OBRIGATORIA', detalhe: tipo + ' exige referencia_id' });
+    }
+    // credor é campo estruturado próprio — nunca derivado de descricao ou
+    // observacao. Sem ele, NOVO_PASSIVO fica sem dono declarado da dívida.
+    if (s.exigeCredor && String(evento.credor || '').trim() === '') {
+      erros.push({ codigo: 'CREDOR_OBRIGATORIO', detalhe: tipo + ' exige credor' });
     }
     // vencimento é estruturalmente distinto de `data`: `data` é a movimentação
     // bancária (usada na conciliação), `vencimento` é quando a obrigação

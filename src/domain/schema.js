@@ -63,6 +63,10 @@
       // (`valor`) — por exemplo, juros descontados na origem.
       'valor', 'valor_devido', 'moeda', 'valor_origem_moeda', 'moeda_origem',
       'descricao', 'referencia_id', 'status',
+      // credor é exclusivo de NOVO_PASSIVO: quem é o dono do dinheiro
+      // devido. Estruturado, nunca derivado de descricao ou observacao —
+      // essas continuam livres para nome e anotação do passivo.
+      'credor',
       'fingerprint_conciliado', 'criado_em', 'criado_por', 'observacao'
     ]
   };

@@ -76,8 +76,8 @@ function nascido() {
   ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
     evento_id: 'EVP1', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
     conta_destino: 'INTER_CC', valor: 4000, valor_devido: 4500,
-    vencimento: '2026-04-30', referencia_id: 'PAS_TESTE',
-    descricao: 'Emprestimo sintetico', observacao: 'COOPERATIVA TESTE'
+    vencimento: '2026-04-30', referencia_id: 'PAS_TESTE', credor: 'COOPERATIVA TESTE',
+    descricao: 'Emprestimo sintetico', observacao: 'juros descontados na origem'
   })]);
   ctx.workflows.importarExtrato({ contaId: 'INTER_CC', nomeArquivo: 'jan.csv', conteudo: CSV_NASCIMENTO });
   resolverUnico(ctx.workflows, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
@@ -137,7 +137,8 @@ describe('Passivo: catálogo canônico', () => {
       const config = FOS.Config.build(FOS.App.Seed.configRows());
       const semVencimento = FOS.Events.validar(dataset.evento({
         evento_id: 'X', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
-        conta_destino: 'INTER_CC', valor: 4000, valor_devido: 4500, referencia_id: 'PAS_X'
+        conta_destino: 'INTER_CC', valor: 4000, valor_devido: 4500, referencia_id: 'PAS_X',
+        credor: 'CREDOR X'
       }), config);
       assert.notOk(semVencimento.ok);
       assert.includes(semVencimento.erros.map((e) => e.codigo), 'VENCIMENTO_INVALIDO');
@@ -151,10 +152,44 @@ describe('Passivo: catálogo canônico', () => {
       const exp = FOS.Events.expectativaConciliacao(dataset.evento({
         evento_id: 'X', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
         conta_destino: 'INTER_CC', valor: 4000, valor_devido: 4500,
-        vencimento: '2026-12-31', referencia_id: 'PAS_X'
+        vencimento: '2026-12-31', referencia_id: 'PAS_X', credor: 'CREDOR X'
       }));
       assert.equal(exp.data, '2026-01-10', 'a conciliação usa a data da movimentação, não o vencimento');
       assert.equal(exp.valor_esperado, 4000, 'a conciliação usa o caixa recebido, não o devido');
+    });
+
+  it('credor é exigido só em NOVO_PASSIVO, e não participa da conciliação',
+    { scenario: 'C54' }, () => {
+      const config = FOS.Config.build(FOS.App.Seed.configRows());
+      const semCredor = FOS.Events.validar(dataset.evento({
+        evento_id: 'X', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
+        conta_destino: 'INTER_CC', valor: 4000, valor_devido: 4500,
+        vencimento: '2026-04-30', referencia_id: 'PAS_X'
+      }), config);
+      assert.notOk(semCredor.ok);
+      assert.includes(semCredor.erros.map((e) => e.codigo), 'CREDOR_OBRIGATORIO');
+
+      const credorEmBranco = FOS.Events.validar(dataset.evento({
+        evento_id: 'X', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
+        conta_destino: 'INTER_CC', valor: 4000, valor_devido: 4500,
+        vencimento: '2026-04-30', referencia_id: 'PAS_X', credor: '   '
+      }), config);
+      assert.notOk(credorEmBranco.ok, 'espaço em branco não conta como credor informado');
+      assert.includes(credorEmBranco.erros.map((e) => e.codigo), 'CREDOR_OBRIGATORIO');
+
+      const amortizacaoSemCredor = FOS.Events.validar(dataset.evento({
+        evento_id: 'X', tipo_evento: 'AMORTIZACAO_PASSIVO', data: '2026-02-10',
+        conta_origem: 'INTER_CC', valor: 2000, referencia_id: 'PAS_X'
+      }), config);
+      assert.ok(amortizacaoSemCredor.ok, 'amortização não exige credor — já está no nascimento');
+
+      const exp = FOS.Events.expectativaConciliacao(dataset.evento({
+        evento_id: 'X', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
+        conta_destino: 'INTER_CC', valor: 4000, valor_devido: 4500,
+        vencimento: '2026-12-31', referencia_id: 'PAS_X', credor: 'CREDOR X'
+      }));
+      assert.notOk(Object.prototype.hasOwnProperty.call(exp, 'credor'),
+        'credor não participa da expectativa de conciliação');
     });
 
   it('valor_devido não pode ser menor que o valor recebido', { scenario: 'C54' }, () => {
@@ -162,7 +197,7 @@ describe('Passivo: catálogo canônico', () => {
     const r = FOS.Events.validar(dataset.evento({
       evento_id: 'X', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
       conta_destino: 'INTER_CC', valor: 4000, valor_devido: 3000,
-      vencimento: '2026-04-30', referencia_id: 'PAS_X'
+      vencimento: '2026-04-30', referencia_id: 'PAS_X', credor: 'CREDOR X'
     }), config);
     assert.notOk(r.ok);
     assert.includes(r.erros.map((e) => e.codigo), 'VALOR_DEVIDO_MENOR_QUE_RECEBIDO');
@@ -172,7 +207,8 @@ describe('Passivo: catálogo canônico', () => {
     const config = FOS.Config.build(FOS.App.Seed.configRows());
     const r = FOS.Events.validar(dataset.evento({
       evento_id: 'X', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
-      conta_destino: 'INTER_CC', valor: 4000, vencimento: '2026-04-30', referencia_id: 'PAS_X'
+      conta_destino: 'INTER_CC', valor: 4000, vencimento: '2026-04-30', referencia_id: 'PAS_X',
+      credor: 'CREDOR X'
     }), config);
     assert.ok(r.ok, JSON.stringify(r.erros));
   });
@@ -207,6 +243,18 @@ describe('Passivo: nascimento com diferença retida na origem', () => {
     assert.equal(p.origem_evento_id, 'EVP1');
   });
 
+  it('credor e observacao chegam ao passivo por campos distintos, sem se misturar',
+    { scenario: 'C54' }, () => {
+      const ctx = nascido();
+      const p = passivoCorrente(ctx);
+      // credor e observacao do evento têm textos DIFERENTES de propósito:
+      // se o código voltasse a ler credor de observacao (ou vice-versa),
+      // qualquer uma das duas asserções abaixo pegaria a regressão.
+      assert.equal(p.credor, 'COOPERATIVA TESTE');
+      assert.equal(p.observacao, 'juros descontados na origem');
+      assert.notEqual(p.credor, p.observacao, 'são dois campos, nunca o mesmo texto');
+    });
+
   it('a diferença é derivada — 500 — e nunca é armazenada', { scenario: 'C54' }, () => {
     const ctx = nascido();
     const p = passivoCorrente(ctx);
@@ -232,12 +280,13 @@ describe('Passivo: nascimento com diferença retida na origem', () => {
       ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
         evento_id: 'EVP_SIMPLES', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-10',
         conta_destino: 'INTER_CC', valor: 1000, vencimento: '2026-06-30', referencia_id: 'PAS_SIMPLES',
-        descricao: 'Emprestimo sem desconto', observacao: 'CREDOR SIMPLES'
+        credor: 'CREDOR SIMPLES', descricao: 'Emprestimo sem desconto'
       })]);
       const r = ctx.workflows.materializarEventos();
       assert.equal(r.passivos.length, 1);
       assert.equal(Number(r.passivos[0].valor_devido_original), 1000);
       assert.equal(Number(r.passivos[0].valor_aberto), 1000);
+      assert.equal(r.passivos[0].credor, 'CREDOR SIMPLES');
     });
 });
 
@@ -250,7 +299,8 @@ describe('Passivo: alcance exato e idempotência', () => {
     const ctx = nascido();
     ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
       evento_id: 'EVP_DUP', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-15',
-      conta_destino: 'INTER_CC', valor: 100, vencimento: '2026-06-30', referencia_id: 'PAS_TESTE'
+      conta_destino: 'INTER_CC', valor: 100, vencimento: '2026-06-30', referencia_id: 'PAS_TESTE',
+      credor: 'CREDOR DUP'
     })]);
     const r = ctx.workflows.materializarEventos();
     assert.equal(r.passivos.length, 0);
@@ -436,7 +486,7 @@ describe('Passivo: impacto no fechamento', () => {
       ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
         evento_id: 'EVP_VENC', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-05',
         conta_destino: 'INTER_CC', valor: 1000, vencimento: '2026-01-10', referencia_id: 'PAS_VENCIDO',
-        descricao: 'Emprestimo vencido', observacao: 'CREDOR VENCIDO'
+        credor: 'CREDOR VENCIDO', descricao: 'Emprestimo vencido'
       })]);
       ctx.workflows.importarExtrato({
         contaId: 'INTER_CC', nomeArquivo: 'jan.csv',
@@ -608,7 +658,7 @@ describe('Passivo × Provisão: exclusão mútua no nível que o modelo garante'
       ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
         evento_id: 'EVP_SEP', tipo_evento: 'NOVO_PASSIVO', data: '2026-01-05',
         conta_destino: 'INTER_CC', valor: 1000, vencimento: '2026-06-30', referencia_id: 'PAS_SEP',
-        descricao: 'Passivo separado', observacao: 'CREDOR SEP'
+        credor: 'CREDOR SEP', descricao: 'Passivo separado'
       })]);
       ctx.workflows.importarExtrato({
         contaId: 'INTER_CC', nomeArquivo: 'jan.csv',

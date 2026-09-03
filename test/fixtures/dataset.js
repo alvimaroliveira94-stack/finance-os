@@ -118,6 +118,7 @@ function evento(campos) {
     descricao: 'sintetico',
     referencia_id: '',
     status: 'PENDENTE',
+    credor: '',
     fingerprint_conciliado: '',
     criado_em: AGORA,
     criado_por: 'TESTE',
