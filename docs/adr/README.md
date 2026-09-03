@@ -17,7 +17,7 @@ política financeira aprovada explicitamente e que o código implementa como est
 | [0005](0005-fila-como-protocolo.md) | Fila de revisão como protocolo de decisão | aceito | Pergunta por origem do item, `DESCARTAR`, cancelar não resolve, correção posterior |
 | [0006](0006-superficie-operacional.md) | Superfície operacional de quatro abas | aceito | Abas visíveis, navegação por menu, restauração canônica |
 | [0007](0007-calibracao-de-classificacao.md) | Calibração da classificação: a regra nasce da decisão, com escopo exato | aceito | Assinatura segura, IGUAL sobre assinatura, três modos, cinco portões, correção fail-safe |
-| [0008](0008-passivo-minimo-canonico.md) | Passivo mínimo canônico: quanto devo é verdade de primeira classe | aceito | Subledger próprio, `valor` × `valor_devido`, custo retido sempre derivado, dedução integral do disponível, patrimônio líquido fora do MVP, materialização só após conciliação comprovada |
+| [0008](0008-passivo-minimo-canonico.md) | Passivo mínimo canônico: quanto devo é verdade de primeira classe | aceito | Subledger próprio, `valor` × `valor_devido`, custo retido sempre derivado, dedução integral do disponível, patrimônio líquido fora do MVP, materialização só após conciliação comprovada, passivo brownfield sem inventar movimento bancário |
 | [0009](0009-brownfield-append-only.md) | Evolução automática de schema em aba já populada: append-only, nunca inserção | aceito | Prefixo de produção intocável só pelo bootstrap automático, coluna nova sempre ao final; mudança incompatível exige migração explícita e autorizada, não é vedada para sempre |
 
 ## Como ler
@@ -32,11 +32,16 @@ mantidos separados de propósito: fila é decisão de domínio e superfície é 
 de produto; ciclo de vida de parâmetro é configuração e política de câmbio é
 regra financeira. Podem evoluir e ser superseded independentemente.
 
-Os ADRs **0007**, **0008** e **0009** ainda não estão implantados em produção: o
-código de cada um está construído e testado, e a mutação da planilha real
-depende de validação controlada. O 0009 registra uma correção descoberta numa
-auditoria de rollout do 0008 contra a planilha de produção — sem ele, o
-deploy do 0008 estava bloqueado.
+O ADR **0007** ainda não está implantado em produção: o código está construído
+e testado, e a mutação da planilha real depende de validação controlada.
+
+O ADR **0008** está **parcialmente** implantado: `NOVO_PASSIVO` está ativo em
+produção e `33_PASSIVOS` já contém `PAS-0001`. O ADR **0009** registra a
+correção descoberta numa auditoria de rollout do 0008 contra a planilha de
+produção, antes desse primeiro passivo real — sem ele, o deploy do 0008
+estava bloqueado. Os dois tipos de passivo brownfield que o item 13 do 0008
+acrescenta (`SALDO_INICIAL_PASSIVO`, `CORRECAO_PASSIVO`) estão construídos e
+testados, ainda não usados em produção.
 
 ## Convenção
 

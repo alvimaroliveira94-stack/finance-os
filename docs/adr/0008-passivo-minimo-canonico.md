@@ -1,6 +1,9 @@
 # ADR 0008 — Passivo mínimo canônico: quanto devo é verdade de primeira classe
 
-Status: aceito · Não implantado em produção · Data: 2026-09
+Status: aceito · Parcialmente implantado em produção (`NOVO_PASSIVO` ativo,
+`33_PASSIVOS` já contém `PAS-0001`) · Itens 13 (`SALDO_INICIAL_PASSIVO` /
+`CORRECAO_PASSIVO`) construídos e testados, ainda não usados em produção ·
+Data: 2026-09
 
 Estende o ADR 0001 (categorias e universos são decisão do usuário, não deste
 documento) e reusa a máquina de versionamento que o ADR 0001 já estabeleceu
@@ -277,6 +280,103 @@ na fila — passa a exigir rodar "Registrar evento" de novo depois de
 resolvida; antes desta correção, esse mesmo caso silenciosamente já criava
 o passivo, o que era exatamente o problema, não uma conveniência a
 preservar.
+
+## 13. Passivo brownfield: dívida pré-existente entra sem inventar movimento bancário
+
+**Contexto.** O portão do item 12 criou um problema novo, real, para as
+dívidas que já existiam quando o Finance OS começou a operar: elas nunca
+vão ter um crédito bancário no sistema para conciliar — o empréstimo
+nasceu antes dos livros abrirem. Usar `NOVO_PASSIVO` para declará-las
+inventaria um nascimento (e um caixa) que nunca aconteceu no período
+observado; classificar as parcelas pagas depois da abertura como
+`CUSTO_VIDA` misturaria amortização de principal com consumo.
+
+**Decisão — dois tipos novos, o catálogo passa de nove para onze.**
+
+### `SALDO_INICIAL_PASSIVO`
+
+Cria a v1 de um passivo em `33_PASSIVOS` **sem nenhuma conciliação e sem
+tocar `22_LEDGER`** — `concilia: false` no SPEC, o mesmo mecanismo que já
+isola `NOVA_OBRIGACAO`/`NOVO_OBJETIVO` do portão de prova bancária.
+`referencia_id` é o `passivo_id`; `credor`, `vencimento`, `moeda`,
+`descricao` seguem a semântica de `NOVO_PASSIVO`; `valor_devido` fica
+vazio. A guarda `PASSIVO_JA_EXISTE`, já usada por `NOVO_PASSIVO`, é
+reaplicada aqui tal como está — um `passivo_id` nasce uma vez, não importa
+por qual dos dois caminhos.
+
+**Fronteira temporal, obrigatória e sem bypass.** `evento.data` não pode
+ser posterior ao fim de `COMPETENCIA_INICIAL_CAIXA_VIDA`
+(`SALDO_INICIAL_FORA_DA_ABERTURA`); se o parâmetro estiver indisponível
+(bloqueado ou nunca semeado), a validação falha fechada
+(`COMPETENCIA_INICIAL_INDISPONIVEL`) — nunca aberta. Sem essa fronteira,
+`SALDO_INICIAL_PASSIVO` seria um segundo caminho, sempre disponível, para
+declarar qualquer dívida sem prova bancária — desfazendo exatamente o
+portão que o item 12 construiu. `vigente_desde` é `evento.data`, a data de
+abertura declarada — não a data de materialização.
+
+**O significado de `valor` é diferente do de `NOVO_PASSIVO`, e é
+deliberado.** É o **saldo total ainda a desembolsar** na data de abertura
+— nunca o valor originalmente contratado. `valor_devido_original` e
+`valor_aberto` nascem os dois iguais a `evento.valor`. Consequência aceita:
+`valor_amortizado` (derivado, `original − aberto`) começa em zero e só
+cresce com o que o sistema observa depois da abertura — nunca finge saber
+quanto já foi pago antes de existir. **Não há reconstrução histórica de
+nenhum tipo**: nenhuma parcela paga antes da abertura é lançada, estimada
+ou inferida; o saldo declarado já é o resultado líquido delas, do mesmo
+jeito que `SALDO_INICIAL_CAIXA_VIDA_BRL` já é o resultado de toda a vida
+financeira anterior sem uma única linha de ledger reconstruída.
+
+### `CORRECAO_PASSIVO`
+
+Nunca um evento financeiro: `concilia: false`, não escreve em `22_LEDGER`,
+não move caixa. Gera nova versão do passivo referenciado pelo mecanismo
+já existente (`FOS.Subledger.novaVersao`) alterando **somente**
+`valor_aberto` — `valor_devido_original`, `nome`, `credor`, `vencimento`,
+`moeda` seguem intocados porque `novaVersao` só sobrescreve as chaves
+explicitamente passadas. `valor` é o **novo saldo absoluto**, não um
+delta — por isso `0` é aceito (quitação por correção) e é o único tipo do
+catálogo com essa permissão. Guardas: `PASSIVO_INEXISTENTE` se a
+referência não existir; `CORRECAO_ACIMA_DO_ORIGINAL` se o valor exceder
+`valor_devido_original` (a mesma disciplina de `PASSIVOS_SALDO_VALIDO` —
+saldo nunca cresce sozinho — aplicada na entrada, não só na saída);
+`OBSERVACAO_OBRIGATORIA` se a observação vier vazia, porque uma correção
+administrativa sem motivo registrado é tão silenciosa quanto o defeito que
+motivou este tipo a existir. Diferente de `AMORTIZACAO_PASSIVO`, a
+`observacao` do evento **é** copiada para a versão nova do passivo — é o
+motivo da correção, e existe para ficar visível na linha corrente, não
+só no log de auditoria.
+
+**O que este tipo não é.** Não é um editor genérico de passivo: não altera
+`credor`, `vencimento`, `moeda` nem `valor_devido_original` — quem precisar
+mudar esses dados de um passivo já criado enfrenta uma decisão estrutural
+nova, fora do escopo deste ADR, do mesmo jeito que o item 12 já deixou
+"reordenar/remover coluna existente" fora do escopo do ADR 0009.
+
+### A regra de amortização do item 11/12 não muda para dívida brownfield
+
+Uma parcela paga depois da abertura (`AMORTIZACAO_PASSIVO`) continua
+exigindo débito conciliado, do mesmo jeito, não importa se o passivo
+nasceu de `NOVO_PASSIVO` ou de `SALDO_INICIAL_PASSIVO` — o portão do item
+12 é sobre a origem do saldo, não sobre a origem do passivo. Classificar
+uma movimentação como `MOVIMENTACAO_COM_TERCEIRO` na fila **não** amortiza
+passivo algum sozinha: só o evento `AMORTIZACAO_PASSIVO`, materializado e
+conciliado, reduz `valor_aberto`. Nenhuma inferência automática de parcela
+foi criada.
+
+**Custo aceito.** Sem separação entre principal e juros: uma parcela abate
+1:1 o saldo aberto, que já significa "total ainda a desembolsar", não
+principal contábil. O sistema nunca reporta quanto de uma parcela é juro —
+não tinha esse dado antes desta extensão, e continua sem tê-lo.
+
+**Limite documentado, não resolvido.** `00_CONFIG_PARAMETROS` guarda uma
+cópia documental do catálogo de `TIPO_EVENTO` (seção `ENUM`), semeada só
+quando a aba está vazia. Numa planilha de produção já semeada com nove
+tipos, essa cópia fica desatualizada depois deste ADR. Isso é cosmético,
+não funcional: nenhum código de runtime lê `config.enums` — o dropdown da
+aba 11 e toda validação vêm de `FOS.Events.SPEC`, a única fonte de
+verdade. Reescrever esse enum documental exigiria um mecanismo de
+re-seed que hoje não existe e que nenhum caso real pede — infraestrutura
+que este ADR delibera não construir agora.
 
 ---
 

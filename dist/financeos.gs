@@ -425,7 +425,7 @@
     MOVIMENTACAO_COM_TERCEIRO: 'MOVIMENTACAO_COM_TERCEIRO'
   };
 
-  /** Tipos de evento manual (aba 11). Exatamente nove. */
+  /** Tipos de evento manual (aba 11). Exatamente onze. */
   var TIPO_EVENTO = {
     SAQUE_TRADING: 'SAQUE_TRADING',
     GASTO_EXTRAORDINARIO: 'GASTO_EXTRAORDINARIO',
@@ -435,7 +435,12 @@
     APORTE_POSICAO: 'APORTE_POSICAO',
     RETIRADA_POSICAO: 'RETIRADA_POSICAO',
     NOVO_PASSIVO: 'NOVO_PASSIVO',
-    AMORTIZACAO_PASSIVO: 'AMORTIZACAO_PASSIVO'
+    AMORTIZACAO_PASSIVO: 'AMORTIZACAO_PASSIVO',
+    // Passivo brownfield: dívida que já existia quando os livros do Finance
+    // OS foram abertos. Nunca concilia — não há crédito bancário a provar.
+    SALDO_INICIAL_PASSIVO: 'SALDO_INICIAL_PASSIVO',
+    // Correção administrativa do saldo aberto. Nunca movimenta caixa.
+    CORRECAO_PASSIVO: 'CORRECAO_PASSIVO'
   };
 
   /** Tipos de evento do ledger de posições (aba 32). */
@@ -2505,9 +2510,11 @@
 
 /* ===== src/domain/events.js ===== */
 /**
- * Eventos manuais (aba 11): exatamente sete tipos.
+ * Eventos manuais (aba 11): exatamente onze tipos.
  * O evento é a declaração de intenção do usuário; a conciliação com o extrato
- * é feita depois, por valor + conta + janela de dias.
+ * é feita depois, por valor + conta + janela de dias — exceto os dois tipos
+ * de passivo brownfield (SALDO_INICIAL_PASSIVO, CORRECAO_PASSIVO), que nunca
+ * concilia porque não representam movimento bancário algum.
  */
 (function (root) {
   'use strict';
@@ -2534,6 +2541,12 @@
    *                       total (pode divergir de `valor`, o caixa recebido)
    *  exigeCredor       — precisa de `credor` — quem é o dono do dinheiro
    *                       devido, estruturado, nunca derivado de outro campo
+   *  exigeFronteiraAbertura — `data` não pode ser posterior ao fim de
+   *                       COMPETENCIA_INICIAL_CAIXA_VIDA (só SALDO_INICIAL_PASSIVO)
+   *  permiteValorZero  — `valor` pode ser exatamente zero (saldo absoluto,
+   *                       não movimento) — só CORRECAO_PASSIVO
+   *  exigeObservacao   — precisa de `observacao` não vazia — o motivo de uma
+   *                       correção nunca é opcional
    */
   var SPEC = {};
   SPEC[T.SAQUE_TRADING] = {
@@ -2590,6 +2603,33 @@
     universoOrigem: C.UNIVERSO.VIDA, universoDestino: null,
     exigeVencimento: false, usaValorDevido: false, exigeCredor: false
   };
+  // Passivo brownfield: a dívida já existia quando os livros do Finance OS
+  // foram abertos. Nunca concilia — não há, e não pode haver, crédito
+  // bancário no sistema para provar: o empréstimo nasceu antes do sistema
+  // existir. `valor` é o saldo total AINDA A DESEMBOLSAR na data de abertura
+  // (não o valor originalmente contratado — ver ADR 0008 §13). Sem
+  // conta_origem/conta_destino: não há contraparte bancária nenhuma aqui.
+  SPEC[T.SALDO_INICIAL_PASSIVO] = {
+    concilia: false, sinalEsperado: null, contaConciliacao: null,
+    exigeReferencia: true, categoriaEsperada: null,
+    universoOrigem: null, universoDestino: null,
+    exigeVencimento: true, usaValorDevido: false, exigeCredor: true,
+    exigeFronteiraAbertura: true
+  };
+  // Correção administrativa do saldo aberto — nunca um evento financeiro:
+  // não move caixa, não concilia, não altera o valor originalmente
+  // reconhecido (valor_devido_original) nem nenhum outro dado estrutural do
+  // passivo. Existe só para corrigir um saldo de abertura digitado errado ou
+  // reconciliar contra o banco/credor fora do fluxo normal de amortização.
+  // `valor` é o novo saldo aberto ABSOLUTO (não um delta) — por isso pode
+  // ser zero (quitação) e é o único tipo com permiteValorZero.
+  SPEC[T.CORRECAO_PASSIVO] = {
+    concilia: false, sinalEsperado: null, contaConciliacao: null,
+    exigeReferencia: true, categoriaEsperada: null,
+    universoOrigem: null, universoDestino: null,
+    exigeVencimento: false, usaValorDevido: false, exigeCredor: false,
+    permiteValorZero: true, exigeObservacao: true
+  };
 
   function spec(tipo) {
     return SPEC[tipo] || null;
@@ -2627,8 +2667,15 @@
       erros.push({ codigo: 'DATA_INVALIDA', detalhe: String(evento.data) });
     }
     var valor = FOS.Normalize.valor(evento.valor);
-    if (valor === null || valor <= 0) {
-      erros.push({ codigo: 'VALOR_INVALIDO', detalhe: 'valor deve ser positivo (o sinal vem do tipo do evento)' });
+    // CORRECAO_PASSIVO carrega um saldo absoluto, não um movimento: zero é
+    // uma quitação legítima (permiteValorZero), não um valor ausente.
+    if (valor === null || (s.permiteValorZero ? valor < 0 : valor <= 0)) {
+      erros.push({
+        codigo: 'VALOR_INVALIDO',
+        detalhe: s.permiteValorZero
+          ? 'valor deve ser zero ou positivo (é o saldo aberto absoluto, não um delta)'
+          : 'valor deve ser positivo (o sinal vem do tipo do evento)'
+      });
     }
     if (!C.isValid(C.MOEDA, String(evento.moeda || '').toUpperCase())) {
       erros.push({ codigo: 'MOEDA_INVALIDA', detalhe: String(evento.moeda) });
@@ -2646,6 +2693,38 @@
     // precisa estar quitada. Nunca extraído de texto livre.
     if (s.exigeVencimento && !FOS.Dates.isIso(String(evento.vencimento || ''))) {
       erros.push({ codigo: 'VENCIMENTO_INVALIDO', detalhe: String(evento.vencimento) });
+    }
+    // Correção nunca é opcional sobre por quê: sem observacao, uma mudança
+    // administrativa de saldo ficaria tão silenciosa quanto o defeito que
+    // motivou este tipo de evento a existir.
+    if (s.exigeObservacao && String(evento.observacao || '').trim() === '') {
+      erros.push({ codigo: 'OBSERVACAO_OBRIGATORIA', detalhe: tipo + ' exige observacao explicando o motivo' });
+    }
+    // Fronteira temporal de SALDO_INICIAL_PASSIVO: este tipo existe só para
+    // abrir os livros com dívida pré-existente, nunca para declarar uma
+    // dívida nova sem prova bancária depois da abertura — isso é o que
+    // NOVO_PASSIVO (com o portão de conciliação) já faz. Sem essa fronteira,
+    // o tipo viraria um bypass permanente daquele portão.
+    if (s.exigeFronteiraAbertura) {
+      var competenciaInicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value;
+      if (!competenciaInicial) {
+        // Falha fechada, não aberta: sem saber onde a abertura termina, não
+        // há como provar que a data está dentro dela — e "não sei" não pode
+        // virar "permitido".
+        erros.push({
+          codigo: 'COMPETENCIA_INICIAL_INDISPONIVEL',
+          detalhe: 'sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' não há como validar a fronteira de abertura'
+        });
+      } else if (FOS.Dates.isIso(String(evento.data))) {
+        var fimAbertura = FOS.Dates.competenciaRange(String(competenciaInicial)).fim;
+        if (FOS.Dates.diffDays(String(evento.data), fimAbertura) > 0) {
+          erros.push({
+            codigo: 'SALDO_INICIAL_FORA_DA_ABERTURA',
+            detalhe: 'data=' + evento.data + ' é posterior ao fim de ' + competenciaInicial
+              + ' (' + fimAbertura + ') — depois da abertura, dívida nova só entra por NOVO_PASSIVO'
+          });
+        }
+      }
     }
     if (s.usaValorDevido && String(evento.valor_devido || '').trim() !== '') {
       var valorDevido = FOS.Normalize.valor(evento.valor_devido);
@@ -7780,9 +7859,13 @@
      *  NOVO_OBJETIVO       -> nova versão em 31_OBJETIVOS
      *  APORTE_POSICAO      -> evento APORTE em 32_LEDGER_POSICOES
      *  RETIRADA_POSICAO    -> evento RETIRADA em 32_LEDGER_POSICOES
-     *  NOVO_PASSIVO        -> v1 em 33_PASSIVOS, só com crédito já conciliado
-     *  AMORTIZACAO_PASSIVO -> nova versão em 33_PASSIVOS, só com débito já
-     *                         conciliado; valor_aberto reduzido
+     *  NOVO_PASSIVO         -> v1 em 33_PASSIVOS, só com crédito já conciliado
+     *  AMORTIZACAO_PASSIVO  -> nova versão em 33_PASSIVOS, só com débito já
+     *                          conciliado; valor_aberto reduzido
+     *  SALDO_INICIAL_PASSIVO -> v1 em 33_PASSIVOS para dívida brownfield,
+     *                          sem conciliação — nunca há crédito a provar
+     *  CORRECAO_PASSIVO     -> nova versão em 33_PASSIVOS, só valor_aberto
+     *                          muda; sem conciliação, sem tocar o caixa
      * Idempotente: cada evento manual materializa no máximo uma vez, e a
      * origem do registro fica gravada em origem_evento_id / evento_id.
      *
@@ -7795,6 +7878,13 @@
      * (`fosRegistrarEvento`) roda `conciliarEventos()` antes desta função:
      * só assim um crédito/débito que já existe no ledger no momento do
      * comando materializa no mesmo clique, sem exigir uma segunda execução.
+     *
+     * SALDO_INICIAL_PASSIVO/CORRECAO_PASSIVO nunca passam por esse portão —
+     * `concilia: false` no SPEC (ADR 0008 §13): representam dívida
+     * pré-existente e correção administrativa, nenhuma das duas com
+     * contrapartida bancária no sistema. A fronteira temporal que os
+     * mantém seguros mora em `FOS.Events.validar` (`exigeFronteiraAbertura`),
+     * não aqui.
      */
     function materializarEventos() {
       var agora = relogio.agora();
@@ -7847,7 +7937,8 @@
         }
         if ([C.TIPO_EVENTO.NOVA_OBRIGACAO, C.TIPO_EVENTO.NOVO_OBJETIVO,
           C.TIPO_EVENTO.APORTE_POSICAO, C.TIPO_EVENTO.RETIRADA_POSICAO,
-          C.TIPO_EVENTO.NOVO_PASSIVO, C.TIPO_EVENTO.AMORTIZACAO_PASSIVO].indexOf(tipo) === -1) return;
+          C.TIPO_EVENTO.NOVO_PASSIVO, C.TIPO_EVENTO.AMORTIZACAO_PASSIVO,
+          C.TIPO_EVENTO.SALDO_INICIAL_PASSIVO, C.TIPO_EVENTO.CORRECAO_PASSIVO].indexOf(tipo) === -1) return;
 
         var validacao = FOS.Events.validar(evento, config);
         if (!validacao.ok) {
@@ -8037,6 +8128,97 @@
             valor_aberto: novoSaldo,
             origem_evento_id: evento.evento_id
           }, agora, 'AMORTIZACAO_PASSIVO:' + evento.evento_id));
+          return;
+        }
+
+        if (tipo === C.TIPO_EVENTO.SALDO_INICIAL_PASSIVO) {
+          if (jaMaterializado(passivosLinhas.concat(passivosNovos), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var passivoBrownfieldExistente = FOS.Subledger.correntes(
+            passivosLinhas.concat(passivosNovos), 'passivo_id'
+          ).filter(function (p) { return String(p.passivo_id) === referencia; })[0];
+          if (passivoBrownfieldExistente) {
+            // Mesma regra de NOVO_PASSIVO: um passivo_id nasce uma vez, por
+            // um caminho só — não importa se o outro caminho foi
+            // NOVO_PASSIVO ou SALDO_INICIAL_PASSIVO.
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{ codigo: 'PASSIVO_JA_EXISTE', detalhe: referencia }]
+            });
+            return;
+          }
+          // Sem portão de conciliação — de propósito. Dívida brownfield não
+          // tem, e nunca vai ter, crédito bancário no sistema para provar.
+          // A fronteira temporal (exigeFronteiraAbertura) já foi checada em
+          // FOS.Events.validar, antes de chegar aqui.
+          passivosNovos.push({
+            passivo_id: referencia,
+            versao: 1,
+            nome: evento.descricao || referencia,
+            credor: evento.credor,
+            // Para passivo brownfield, valor_devido_original e valor_aberto
+            // nascem iguais: o saldo total ainda a desembolsar na data de
+            // abertura, não o valor originalmente contratado. O sistema
+            // nunca reconstrói parcelas pagas antes de existir.
+            valor_devido_original: valor,
+            valor_aberto: valor,
+            moeda: String(evento.moeda || C.MOEDA.BRL).toUpperCase(),
+            vencimento: String(evento.vencimento),
+            origem_evento_id: evento.evento_id,
+            vigente_desde: String(evento.data),
+            vigente_ate: '',
+            criado_em: agora,
+            motivo_versao: 'SALDO_INICIAL_POR_EVENTO:' + evento.evento_id,
+            observacao: evento.observacao || ''
+          });
+          return;
+        }
+
+        if (tipo === C.TIPO_EVENTO.CORRECAO_PASSIVO) {
+          if (jaMaterializado(passivosLinhas.concat(passivosNovos), 'origem_evento_id', evento.evento_id)) {
+            ignorados.push({ evento_id: evento.evento_id, motivo: 'JA_MATERIALIZADO' });
+            return;
+          }
+          var passivoParaCorrigir = FOS.Subledger.correntes(
+            passivosLinhas.concat(passivosNovos), 'passivo_id'
+          ).filter(function (p) { return String(p.passivo_id) === referencia; })[0];
+          if (!passivoParaCorrigir) {
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{ codigo: 'PASSIVO_INEXISTENTE', detalhe: referencia }]
+            });
+            return;
+          }
+          // valor aqui é o novo saldo ABSOLUTO (FOS.Events.validar já
+          // aceitou zero — permiteValorZero). Nunca pode superar o que foi
+          // reconhecido na origem: isso seria a dívida crescendo sozinha,
+          // o mesmo comportamento não suportado que PASSIVOS_SALDO_VALIDO
+          // já existe para pegar na saída — aqui a entrada é bloqueada antes.
+          if (valor > Number(passivoParaCorrigir.valor_devido_original)) {
+            invalidos.push({
+              evento_id: evento.evento_id,
+              erros: [{
+                codigo: 'CORRECAO_ACIMA_DO_ORIGINAL',
+                detalhe: 'valor_devido_original=' + passivoParaCorrigir.valor_devido_original
+                  + '; correcao=' + valor
+              }]
+            });
+            return;
+          }
+          // Nunca conciliação, nunca ledger, nunca movimenta caixa — só o
+          // saldo aberto muda. nome/credor/vencimento/moeda/
+          // valor_devido_original seguem intocados: novaVersao só sobrescreve
+          // as chaves passadas aqui. observacao é sobrescrita de propósito —
+          // é o motivo desta correção específica, exigido por
+          // FOS.Events.validar (exigeObservacao), e é isto que fica visível
+          // na versão corrente do passivo.
+          passivosNovos.push(FOS.Subledger.novaVersao(passivoParaCorrigir, {
+            valor_aberto: valor,
+            origem_evento_id: evento.evento_id,
+            observacao: evento.observacao || ''
+          }, agora, 'CORRECAO_PASSIVO:' + evento.evento_id));
           return;
         }
 

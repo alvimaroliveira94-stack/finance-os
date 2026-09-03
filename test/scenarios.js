@@ -61,7 +61,8 @@ const CENARIOS = [
   { id: 'C51', nome: 'Parâmetro depreciado sai da configuração sem perder histórico' },
   { id: 'C52', nome: 'Superfície de quatro abas e fila totalmente abstraída' },
   { id: 'C53', nome: 'Calibração: a regra nasce da decisão, com escopo exato e persistência conquistada' },
-  { id: 'C54', nome: 'Passivo mínimo: obrigação com terceiro, recebido ≠ devido, sem contaminar patrimônio' }
+  { id: 'C54', nome: 'Passivo mínimo: obrigação com terceiro, recebido ≠ devido, sem contaminar patrimônio' },
+  { id: 'C55', nome: 'Passivo brownfield: saldo inicial pré-existente e correção administrativa sem movimentar caixa' }
 ];
 
 module.exports = { CENARIOS };

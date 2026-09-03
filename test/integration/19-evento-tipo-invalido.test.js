@@ -176,7 +176,7 @@ describe('Lista fechada na aba 11', () => {
     const tipos = ctx.planilha.chamadasDe('validarColunaPorLista')
       .filter((v) => v.nome === A.EVENTOS_MANUAIS && v.coluna === 'tipo_evento')[0].valores;
     assert.deep(tipos, Object.keys(FOS.Events.SPEC));
-    assert.equal(tipos.length, 9);
+    assert.equal(tipos.length, 11);
   });
 
   it('preparar de novo não duplica regra nem perde linha', { scenario: 'C50' }, () => {

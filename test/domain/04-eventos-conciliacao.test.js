@@ -23,14 +23,14 @@ function linhaLedger(campos) {
 }
 
 describe('Eventos manuais', () => {
-  it('reconhece exatamente nove tipos', { scenario: 'C06' }, () => {
-    assert.equal(C.values(C.TIPO_EVENTO).length, 9);
+  it('reconhece exatamente onze tipos', { scenario: 'C06' }, () => {
+    assert.equal(C.values(C.TIPO_EVENTO).length, 11);
     C.values(C.TIPO_EVENTO).forEach((tipo) => {
       assert.ok(FOS.Events.spec(tipo), 'sem especificação para ' + tipo);
     });
   });
 
-  it('valida os nove tipos com dados coerentes', { scenario: 'C06' }, () => {
+  it('valida os onze tipos com dados coerentes', { scenario: 'C06' }, () => {
     const casos = [
       dataset.evento({ evento_id: 'E1', tipo_evento: 'SAQUE_TRADING', data: '2026-01-15', conta_origem: 'WISE', conta_destino: 'INTER_CC', valor: 6000, valor_origem_moeda: 1000, moeda_origem: 'GBP' }),
       dataset.evento({ evento_id: 'E2', tipo_evento: 'GASTO_EXTRAORDINARIO', data: '2026-01-16', conta_origem: 'INTER_CC', valor: 900 }),
@@ -47,6 +47,15 @@ describe('Eventos manuais', () => {
       dataset.evento({
         evento_id: 'E9', tipo_evento: 'AMORTIZACAO_PASSIVO', data: '2026-01-23', conta_origem: 'INTER_CC',
         valor: 8000, referencia_id: 'PAS_X'
+      }),
+      dataset.evento({
+        evento_id: 'E10', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-01-05',
+        valor: 3300, vencimento: '2027-01-31', referencia_id: 'PAS_BROWNFIELD',
+        credor: 'CREDOR BROWNFIELD'
+      }),
+      dataset.evento({
+        evento_id: 'E11', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-24',
+        valor: 2900, referencia_id: 'PAS_X', observacao: 'Ajuste sintético de saldo'
       })
     ];
     casos.forEach((e) => {

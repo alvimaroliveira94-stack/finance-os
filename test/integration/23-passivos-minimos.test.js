@@ -142,8 +142,10 @@ describe('Passivo: catálogo canônico', () => {
     assert.equal(FOS.Rules.UNIVERSO_POR_CATEGORIA.MOVIMENTACAO_COM_TERCEIRO, C.UNIVERSO.VIDA);
   });
 
-  it('o catálogo de eventos passa de sete para nove tipos', { scenario: 'C54' }, () => {
-    assert.equal(C.values(C.TIPO_EVENTO).length, 9);
+  it('o catálogo de eventos passou de sete para nove tipos com este MVP', { scenario: 'C54' }, () => {
+    // Contagem total do catálogo (agora onze, com o brownfield do C55) é
+    // responsabilidade do describe "Passivo brownfield" — este teste só
+    // documenta a marca histórica dos dois primeiros tipos de passivo.
     assert.includes(C.values(C.TIPO_EVENTO), 'NOVO_PASSIVO');
     assert.includes(C.values(C.TIPO_EVENTO), 'AMORTIZACAO_PASSIVO');
     assert.ok(FOS.Events.spec('NOVO_PASSIVO').concilia);
@@ -1088,4 +1090,343 @@ describe('Passivo: portão de conciliação — nascimento nunca antecipa o cré
         'conciliarEventos() precisa rodar antes de materializarEventos() — '
         + 'NOVO_PASSIVO/AMORTIZACAO_PASSIVO dependem da conciliação já ter acontecido');
     });
+});
+
+/* ------------------------------------------------------------------ */
+/* Passivo brownfield: SALDO_INICIAL_PASSIVO e CORRECAO_PASSIVO        */
+/* ------------------------------------------------------------------ */
+
+/** Declara uma dívida pré-existente por SALDO_INICIAL_PASSIVO — sem
+ *  extrato, sem conciliação: é assim que ela entra no sistema. */
+function comSaldoInicialPassivo(camposEvento) {
+  const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
+  ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento(Object.assign({
+    evento_id: 'EVB1', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-01-05',
+    referencia_id: 'PAS_BROWNFIELD', credor: 'CREDOR BROWNFIELD',
+    vencimento: '2027-06-30', valor: 3300, descricao: 'Divida pre-existente sintetica'
+  }, camposEvento || {}))]);
+  return ctx;
+}
+
+/** comSaldoInicialPassivo() já materializado — base para os testes de
+ *  CORRECAO_PASSIVO e de amortização normal de uma dívida brownfield. */
+function nascidoBrownfield() {
+  const ctx = comSaldoInicialPassivo();
+  ctx.workflows.conciliarEventos();
+  ctx.workflows.materializarEventos();
+  return ctx;
+}
+
+describe('Passivo brownfield: SALDO_INICIAL_PASSIVO', () => {
+  it('o catálogo de eventos agora tem exatamente onze tipos', { scenario: 'C55' }, () => {
+    assert.equal(C.values(C.TIPO_EVENTO).length, 11);
+    assert.includes(C.values(C.TIPO_EVENTO), 'SALDO_INICIAL_PASSIVO');
+    assert.includes(C.values(C.TIPO_EVENTO), 'CORRECAO_PASSIVO');
+    assert.notOk(FOS.Events.spec('SALDO_INICIAL_PASSIVO').concilia, 'nunca concilia');
+    assert.notOk(FOS.Events.spec('CORRECAO_PASSIVO').concilia, 'nunca concilia');
+  });
+
+  it('evento válido cria o passivo sem qualquer conciliação', { scenario: 'C55' }, () => {
+    const ctx = nascidoBrownfield();
+    const p = passivoCorrente(ctx);
+    assert.ok(p, 'esperado o passivo brownfield criado');
+    assert.equal(p.passivo_id, 'PAS_BROWNFIELD');
+    assert.equal(Number(p.versao), 1);
+    assert.equal(p.credor, 'CREDOR BROWNFIELD');
+    assert.equal(p.origem_evento_id, 'EVB1');
+  });
+
+  it('nenhuma linha de ledger é criada ou alterada por ele', { scenario: 'C55' }, () => {
+    const ctx = nascidoBrownfield();
+    assert.equal(ctx.repositorio.ledger().length, 0, 'SALDO_INICIAL_PASSIVO nunca toca 22_LEDGER');
+  });
+
+  it('valor_devido_original == valor_aberto == evento.valor', { scenario: 'C55' }, () => {
+    const ctx = nascidoBrownfield();
+    const p = passivoCorrente(ctx);
+    assert.equal(Number(p.valor_devido_original), 3300);
+    assert.equal(Number(p.valor_aberto), 3300);
+    assert.equal(Number(p.valor_devido_original), Number(p.valor_aberto));
+  });
+
+  it('vigente_desde reflete evento.data — a data de abertura, não a de materialização',
+    { scenario: 'C55' }, () => {
+      const ctx = nascidoBrownfield();
+      assert.equal(passivoCorrente(ctx).vigente_desde, '2026-01-05');
+    });
+
+  it('data dentro da abertura é aceita', { scenario: 'C55' }, () => {
+    const config = FOS.Config.build(FOS.App.Seed.configRows());
+    const r = FOS.Events.validar(dataset.evento({
+      evento_id: 'X', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-01-31',
+      referencia_id: 'PAS_X', credor: 'CREDOR X', vencimento: '2027-01-01', valor: 1000
+    }), config);
+    assert.ok(r.ok, JSON.stringify(r.erros));
+  });
+
+  it('data posterior ao fim da competência inicial recusa com SALDO_INICIAL_FORA_DA_ABERTURA',
+    { scenario: 'C55' }, () => {
+      const config = FOS.Config.build(FOS.App.Seed.configRows());
+      const r = FOS.Events.validar(dataset.evento({
+        evento_id: 'X', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-02-01',
+        referencia_id: 'PAS_X', credor: 'CREDOR X', vencimento: '2027-01-01', valor: 1000
+      }), config);
+      assert.notOk(r.ok);
+      assert.includes(r.erros.map((e) => e.codigo), 'SALDO_INICIAL_FORA_DA_ABERTURA');
+    });
+
+  it('sem COMPETENCIA_INICIAL_CAIXA_VIDA disponível, recusa fechado — nunca vira bypass do portão',
+    { scenario: 'C55' }, () => {
+      const linhasSemParam = FOS.App.Seed.configRows()
+        .filter((r) => !(r.secao === 'PARAMETRO' && r.chave === FOS.Life.PARAM_COMPETENCIA_INICIAL));
+      const config = FOS.Config.build(linhasSemParam);
+      const r = FOS.Events.validar(dataset.evento({
+        evento_id: 'X', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-01-05',
+        referencia_id: 'PAS_X', credor: 'CREDOR X', vencimento: '2027-01-01', valor: 1000
+      }), config);
+      assert.notOk(r.ok);
+      assert.includes(r.erros.map((e) => e.codigo), 'COMPETENCIA_INICIAL_INDISPONIVEL');
+    });
+
+  it('passivo_id duplicado recusa, mesmo entre SALDO_INICIAL_PASSIVO e NOVO_PASSIVO',
+    { scenario: 'C55' }, () => {
+      const ctx = nascidoBrownfield();
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVB_DUP', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-01-06',
+        referencia_id: 'PAS_BROWNFIELD', credor: 'OUTRO CREDOR', vencimento: '2027-01-01', valor: 500
+      })]);
+      const r = ctx.workflows.materializarEventos();
+      assert.equal(r.passivos.length, 0);
+      assert.equal(r.invalidos[0].erros[0].codigo, 'PASSIVO_JA_EXISTE');
+      assert.equal(FOS.Subledger.correntes(ctx.repositorio.passivos(), 'passivo_id').length, 1);
+    });
+
+  it('setup brownfield (Preparar planilha) continua idempotente com onze tipos no dropdown',
+    { scenario: 'C55' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false });
+      FOS.App.Bootstrap.inicializar({ planilha: ctx.planilha, repositorio: ctx.repositorio, auditoria: ctx.auditoria });
+      const dropdowns = ctx.planilha.chamadasDe('validarColunaPorLista')
+        .filter((v) => v.nome === A.EVENTOS_MANUAIS && v.coluna === 'tipo_evento');
+      assert.equal(dropdowns.length, 2, 'reaplicar a mesma regra é idempotente no Sheets');
+      assert.equal(dropdowns[0].valores.length, 11);
+      assert.deep(dropdowns[0].valores, dropdowns[1].valores);
+    });
+
+  it('nenhum schema existente se desloca: 11_EVENTOS_MANUAIS continua com as mesmas 19 colunas',
+    { scenario: 'C55' }, () => {
+      const colunas = FOS.Schema.get(A.EVENTOS_MANUAIS).colunas;
+      assert.equal(colunas.length, 19, 'SALDO_INICIAL_PASSIVO/CORRECAO_PASSIVO não precisam de coluna nova');
+      assert.deep(colunas.slice(16), ['valor_devido', 'vencimento', 'credor']);
+    });
+});
+
+describe('Passivo brownfield: CORRECAO_PASSIVO', () => {
+  it('passivo existente gera nova versão — só valor_aberto muda', { scenario: 'C55' }, () => {
+    const ctx = nascidoBrownfield();
+    ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+      evento_id: 'EVB2', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+      referencia_id: 'PAS_BROWNFIELD', valor: 3000, observacao: 'Saldo real informado pelo credor'
+    })]);
+    const wfCorrecao = workflowsEm(ctx, '2026-02-01T09:00:00Z');
+    const r = wfCorrecao.materializarEventos();
+    assert.equal(r.passivos.length, 1);
+
+    const p = passivoCorrente(ctx);
+    assert.equal(Number(p.versao), 2);
+    assert.equal(Number(p.valor_aberto), 3000);
+    assert.equal(Number(p.valor_devido_original), 3300, 'valor_devido_original nunca muda por correção');
+    assert.equal(p.credor, 'CREDOR BROWNFIELD', 'credor intacto');
+    assert.equal(p.vencimento, '2027-06-30', 'vencimento intacto');
+    assert.equal(p.moeda, 'BRL', 'moeda intacta');
+    assert.equal(p.nome, 'Divida pre-existente sintetica', 'nome intacto');
+    assert.includes(p.motivo_versao, 'CORRECAO_PASSIVO:EVB2');
+  });
+
+  it('versão anterior continua vigente para competências antes da correção — o mecanismo já existente',
+    { scenario: 'C55' }, () => {
+      const ctx = nascidoBrownfield();
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVB2', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+        referencia_id: 'PAS_BROWNFIELD', valor: 3000, observacao: 'Saldo real informado pelo credor'
+      })]);
+      const wfCorrecao = workflowsEm(ctx, '2026-02-01T09:00:00Z');
+      wfCorrecao.materializarEventos();
+
+      const linhas = ctx.repositorio.passivos();
+      // A versão corrigida nasce com vigente_desde = agora da correção
+      // (fevereiro): reprocessar janeiro não pode enxergá-la — o mesmo
+      // "vigente_ate por projeção" que já vale para provisão/objetivo.
+      assert.equal(FOS.Subledger.correntesEm(linhas, 'passivo_id', '2026-01')[0].valor_aberto, 3300);
+      assert.equal(FOS.Subledger.correntesEm(linhas, 'passivo_id', '2026-02')[0].valor_aberto, 3000);
+    });
+
+  it('valor = 0 é aceito — quitação por correção administrativa', { scenario: 'C55' }, () => {
+    const ctx = nascidoBrownfield();
+    ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+      evento_id: 'EVB2', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+      referencia_id: 'PAS_BROWNFIELD', valor: 0, observacao: 'Divida quitada antes do sistema existir'
+    })]);
+    const r = ctx.workflows.materializarEventos();
+    assert.equal(r.passivos.length, 1);
+    assert.equal(Number(passivoCorrente(ctx).valor_aberto), 0);
+  });
+
+  it('valor negativo recusa com VALOR_INVALIDO', { scenario: 'C55' }, () => {
+    const config = FOS.Config.build(FOS.App.Seed.configRows());
+    const r = FOS.Events.validar(dataset.evento({
+      evento_id: 'X', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+      referencia_id: 'PAS_BROWNFIELD', valor: -1, observacao: 'motivo qualquer'
+    }), config);
+    assert.notOk(r.ok);
+    assert.includes(r.erros.map((e) => e.codigo), 'VALOR_INVALIDO');
+  });
+
+  it('valor acima do valor_devido_original recusa com CORRECAO_ACIMA_DO_ORIGINAL',
+    { scenario: 'C55' }, () => {
+      const ctx = nascidoBrownfield();
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVB2', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+        referencia_id: 'PAS_BROWNFIELD', valor: 3301, observacao: 'motivo qualquer'
+      })]);
+      const antes = passivoCorrente(ctx);
+      const r = ctx.workflows.materializarEventos();
+      assert.equal(r.passivos.length, 0);
+      assert.equal(r.invalidos[0].erros[0].codigo, 'CORRECAO_ACIMA_DO_ORIGINAL');
+      const depois = passivoCorrente(ctx);
+      assert.equal(Number(depois.valor_aberto), Number(antes.valor_aberto));
+      assert.equal(Number(depois.versao), Number(antes.versao));
+    });
+
+  it('referência inexistente recusa com PASSIVO_INEXISTENTE', { scenario: 'C55' }, () => {
+    const ctx = dataset.montarWorkbook({ comDados: false });
+    ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+      evento_id: 'EVB_FANTASMA', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+      referencia_id: 'PAS_INEXISTENTE', valor: 100, observacao: 'motivo qualquer'
+    })]);
+    const r = ctx.workflows.materializarEventos();
+    assert.equal(r.passivos.length, 0);
+    assert.equal(r.invalidos[0].erros[0].codigo, 'PASSIVO_INEXISTENTE');
+  });
+
+  it('observação vazia recusa com OBSERVACAO_OBRIGATORIA', { scenario: 'C55' }, () => {
+    const config = FOS.Config.build(FOS.App.Seed.configRows());
+    const r = FOS.Events.validar(dataset.evento({
+      evento_id: 'X', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+      referencia_id: 'PAS_BROWNFIELD', valor: 3000
+    }), config);
+    assert.notOk(r.ok);
+    assert.includes(r.erros.map((e) => e.codigo), 'OBSERVACAO_OBRIGATORIA');
+  });
+
+  it('não há conciliação nem alteração de ledger', { scenario: 'C55' }, () => {
+    const ctx = nascidoBrownfield();
+    ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+      evento_id: 'EVB2', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+      referencia_id: 'PAS_BROWNFIELD', valor: 3000, observacao: 'motivo qualquer'
+    })]);
+    const antesLedger = ctx.repositorio.ledger().length;
+    const conciliacao = ctx.workflows.conciliarEventos();
+    ctx.workflows.materializarEventos();
+    assert.equal(ctx.repositorio.ledger().length, antesLedger, 'CORRECAO_PASSIVO nunca toca 22_LEDGER');
+    assert.equal(conciliacao.conciliadas, 0);
+  });
+});
+
+describe('Passivo brownfield: não-regressão', () => {
+  it('disponível e runway continuam coerentes com um passivo brownfield em aberto',
+    { scenario: 'C55' }, () => {
+      const ctx = nascidoBrownfield();
+      const r = ctx.workflows.fecharCompetencia('2026-01');
+      assert.ok(r.validacao.ok, JSON.stringify(r.validacao.violacoes));
+      const s = r.snapshot;
+      // caixa = 10000 (inicial) — nenhum movimento bancário entrou
+      assert.equal(s.vida.caixa_vida_brl.value, 10000);
+      assert.equal(s.vida.passivos_abertos_brl.value, 3300);
+      assert.equal(s.vida.disponivel_brl.value, 6700, '10000 - 0 - 0 - 3300');
+    });
+
+  it('amortizar uma dívida brownfield reduz o saldo normalmente, exigindo débito conciliado como sempre',
+    { scenario: 'C55' }, () => {
+      const ctx = nascidoBrownfield();
+      const wfFev = workflowsEm(ctx, '2026-02-15T12:00:00Z');
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVB_AMORT', tipo_evento: 'AMORTIZACAO_PASSIVO', data: '2026-02-15',
+        conta_origem: 'INTER_CC', valor: 300, referencia_id: 'PAS_BROWNFIELD',
+        descricao: 'Parcela sintetica de fevereiro'
+      })]);
+
+      // Sem débito conciliado ainda: recusa — mesmo portão do round anterior,
+      // não importa se o passivo nasceu de NOVO_PASSIVO ou brownfield.
+      const semExtrato = wfFev.materializarEventos();
+      assert.equal(semExtrato.passivos.length, 0);
+      assert.equal(semExtrato.invalidos[0].erros[0].codigo, 'AMORTIZACAO_SEM_CONCILIACAO');
+
+      wfFev.importarExtrato({
+        contaId: 'INTER_CC', nomeArquivo: 'fev.csv',
+        conteudo: 'data;descricao;valor\n15/02/2026;DEBITO PARCELA BROWNFIELD;-300,00'
+      });
+      resolverUnico(wfFev, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
+      wfFev.conciliarEventos();
+      const comExtrato = wfFev.materializarEventos();
+      assert.equal(comExtrato.passivos.length, 1);
+      assert.equal(Number(passivoCorrente(ctx).valor_aberto), 3000, '3300 - 300');
+
+      // A parcela vira MOVIMENTACAO_COM_TERCEIRO, nunca CUSTO_VIDA.
+      const linhaLedger = FOS.Ledger.visaoCorrente(ctx.repositorio.ledger())
+        .filter((l) => Number(l.valor_origem) === -300)[0];
+      assert.ok(linhaLedger);
+      assert.equal(linhaLedger.categoria, 'MOVIMENTACAO_COM_TERCEIRO');
+    });
+
+  it('classificar uma movimentação como MOVIMENTACAO_COM_TERCEIRO não amortiza passivo sozinho',
+    { scenario: 'C55' }, () => {
+      // Sem AMORTIZACAO_PASSIVO declarado, nenhuma inferência automática:
+      // classificar a linha na fila não move valor_aberto.
+      const ctx = nascidoBrownfield();
+      const wfFev = workflowsEm(ctx, '2026-02-15T12:00:00Z');
+      wfFev.importarExtrato({
+        contaId: 'INTER_CC', nomeArquivo: 'fev.csv',
+        conteudo: 'data;descricao;valor\n15/02/2026;DEBITO PARCELA BROWNFIELD;-300,00'
+      });
+      resolverUnico(wfFev, ctx, 'MOVIMENTACAO_COM_TERCEIRO');
+      wfFev.conciliarEventos();
+      wfFev.materializarEventos();
+      assert.equal(Number(passivoCorrente(ctx).valor_aberto), 3300, 'saldo intacto sem evento de amortização');
+    });
+
+  it('eventos não relacionados a passivo materializam igual, com os dois tipos novos no catálogo',
+    { scenario: 'C55' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-01-10T12:00:00Z' });
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [
+        dataset.evento({
+          evento_id: 'EVN_OBR', tipo_evento: 'NOVA_OBRIGACAO', data: '2026-01-10',
+          valor: 3000, referencia_id: 'PROV_C55', descricao: 'Provisao de controle'
+        }),
+        dataset.evento({
+          evento_id: 'EVN_OBJ', tipo_evento: 'NOVO_OBJETIVO', data: '2026-01-10',
+          valor: 20000, referencia_id: 'OBJ_C55', descricao: 'Objetivo de controle'
+        })
+      ]);
+      ctx.workflows.conciliarEventos();
+      const r = ctx.workflows.materializarEventos();
+      assert.equal(r.invalidos.length, 0, JSON.stringify(r.invalidos));
+      assert.equal(r.provisoes.length, 1);
+      assert.equal(r.objetivos.length, 1);
+    });
+
+  it('uma segunda "Registrar evento" é idempotente para os dois tipos novos', { scenario: 'C55' }, () => {
+    const ctx = nascidoBrownfield();
+    ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+      evento_id: 'EVB2', tipo_evento: 'CORRECAO_PASSIVO', data: '2026-01-15',
+      referencia_id: 'PAS_BROWNFIELD', valor: 3000, observacao: 'motivo qualquer'
+    })]);
+    ctx.workflows.materializarEventos();
+    const antes = ctx.repositorio.passivos().length;
+
+    ctx.workflows.conciliarEventos();
+    const r = ctx.workflows.materializarEventos();
+    assert.equal(r.passivos.length, 0);
+    assert.deep(r.ignorados.map((i) => i.evento_id).sort(), ['EVB1', 'EVB2']);
+    assert.equal(ctx.repositorio.passivos().length, antes, 'sem duplicar');
+  });
 });

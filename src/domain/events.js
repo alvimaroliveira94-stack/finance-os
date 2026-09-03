@@ -1,7 +1,9 @@
 /**
- * Eventos manuais (aba 11): exatamente sete tipos.
+ * Eventos manuais (aba 11): exatamente onze tipos.
  * O evento é a declaração de intenção do usuário; a conciliação com o extrato
- * é feita depois, por valor + conta + janela de dias.
+ * é feita depois, por valor + conta + janela de dias — exceto os dois tipos
+ * de passivo brownfield (SALDO_INICIAL_PASSIVO, CORRECAO_PASSIVO), que nunca
+ * concilia porque não representam movimento bancário algum.
  */
 (function (root) {
   'use strict';
@@ -28,6 +30,12 @@
    *                       total (pode divergir de `valor`, o caixa recebido)
    *  exigeCredor       — precisa de `credor` — quem é o dono do dinheiro
    *                       devido, estruturado, nunca derivado de outro campo
+   *  exigeFronteiraAbertura — `data` não pode ser posterior ao fim de
+   *                       COMPETENCIA_INICIAL_CAIXA_VIDA (só SALDO_INICIAL_PASSIVO)
+   *  permiteValorZero  — `valor` pode ser exatamente zero (saldo absoluto,
+   *                       não movimento) — só CORRECAO_PASSIVO
+   *  exigeObservacao   — precisa de `observacao` não vazia — o motivo de uma
+   *                       correção nunca é opcional
    */
   var SPEC = {};
   SPEC[T.SAQUE_TRADING] = {
@@ -84,6 +92,33 @@
     universoOrigem: C.UNIVERSO.VIDA, universoDestino: null,
     exigeVencimento: false, usaValorDevido: false, exigeCredor: false
   };
+  // Passivo brownfield: a dívida já existia quando os livros do Finance OS
+  // foram abertos. Nunca concilia — não há, e não pode haver, crédito
+  // bancário no sistema para provar: o empréstimo nasceu antes do sistema
+  // existir. `valor` é o saldo total AINDA A DESEMBOLSAR na data de abertura
+  // (não o valor originalmente contratado — ver ADR 0008 §13). Sem
+  // conta_origem/conta_destino: não há contraparte bancária nenhuma aqui.
+  SPEC[T.SALDO_INICIAL_PASSIVO] = {
+    concilia: false, sinalEsperado: null, contaConciliacao: null,
+    exigeReferencia: true, categoriaEsperada: null,
+    universoOrigem: null, universoDestino: null,
+    exigeVencimento: true, usaValorDevido: false, exigeCredor: true,
+    exigeFronteiraAbertura: true
+  };
+  // Correção administrativa do saldo aberto — nunca um evento financeiro:
+  // não move caixa, não concilia, não altera o valor originalmente
+  // reconhecido (valor_devido_original) nem nenhum outro dado estrutural do
+  // passivo. Existe só para corrigir um saldo de abertura digitado errado ou
+  // reconciliar contra o banco/credor fora do fluxo normal de amortização.
+  // `valor` é o novo saldo aberto ABSOLUTO (não um delta) — por isso pode
+  // ser zero (quitação) e é o único tipo com permiteValorZero.
+  SPEC[T.CORRECAO_PASSIVO] = {
+    concilia: false, sinalEsperado: null, contaConciliacao: null,
+    exigeReferencia: true, categoriaEsperada: null,
+    universoOrigem: null, universoDestino: null,
+    exigeVencimento: false, usaValorDevido: false, exigeCredor: false,
+    permiteValorZero: true, exigeObservacao: true
+  };
 
   function spec(tipo) {
     return SPEC[tipo] || null;
@@ -121,8 +156,15 @@
       erros.push({ codigo: 'DATA_INVALIDA', detalhe: String(evento.data) });
     }
     var valor = FOS.Normalize.valor(evento.valor);
-    if (valor === null || valor <= 0) {
-      erros.push({ codigo: 'VALOR_INVALIDO', detalhe: 'valor deve ser positivo (o sinal vem do tipo do evento)' });
+    // CORRECAO_PASSIVO carrega um saldo absoluto, não um movimento: zero é
+    // uma quitação legítima (permiteValorZero), não um valor ausente.
+    if (valor === null || (s.permiteValorZero ? valor < 0 : valor <= 0)) {
+      erros.push({
+        codigo: 'VALOR_INVALIDO',
+        detalhe: s.permiteValorZero
+          ? 'valor deve ser zero ou positivo (é o saldo aberto absoluto, não um delta)'
+          : 'valor deve ser positivo (o sinal vem do tipo do evento)'
+      });
     }
     if (!C.isValid(C.MOEDA, String(evento.moeda || '').toUpperCase())) {
       erros.push({ codigo: 'MOEDA_INVALIDA', detalhe: String(evento.moeda) });
@@ -140,6 +182,38 @@
     // precisa estar quitada. Nunca extraído de texto livre.
     if (s.exigeVencimento && !FOS.Dates.isIso(String(evento.vencimento || ''))) {
       erros.push({ codigo: 'VENCIMENTO_INVALIDO', detalhe: String(evento.vencimento) });
+    }
+    // Correção nunca é opcional sobre por quê: sem observacao, uma mudança
+    // administrativa de saldo ficaria tão silenciosa quanto o defeito que
+    // motivou este tipo de evento a existir.
+    if (s.exigeObservacao && String(evento.observacao || '').trim() === '') {
+      erros.push({ codigo: 'OBSERVACAO_OBRIGATORIA', detalhe: tipo + ' exige observacao explicando o motivo' });
+    }
+    // Fronteira temporal de SALDO_INICIAL_PASSIVO: este tipo existe só para
+    // abrir os livros com dívida pré-existente, nunca para declarar uma
+    // dívida nova sem prova bancária depois da abertura — isso é o que
+    // NOVO_PASSIVO (com o portão de conciliação) já faz. Sem essa fronteira,
+    // o tipo viraria um bypass permanente daquele portão.
+    if (s.exigeFronteiraAbertura) {
+      var competenciaInicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value;
+      if (!competenciaInicial) {
+        // Falha fechada, não aberta: sem saber onde a abertura termina, não
+        // há como provar que a data está dentro dela — e "não sei" não pode
+        // virar "permitido".
+        erros.push({
+          codigo: 'COMPETENCIA_INICIAL_INDISPONIVEL',
+          detalhe: 'sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' não há como validar a fronteira de abertura'
+        });
+      } else if (FOS.Dates.isIso(String(evento.data))) {
+        var fimAbertura = FOS.Dates.competenciaRange(String(competenciaInicial)).fim;
+        if (FOS.Dates.diffDays(String(evento.data), fimAbertura) > 0) {
+          erros.push({
+            codigo: 'SALDO_INICIAL_FORA_DA_ABERTURA',
+            detalhe: 'data=' + evento.data + ' é posterior ao fim de ' + competenciaInicial
+              + ' (' + fimAbertura + ') — depois da abertura, dívida nova só entra por NOVO_PASSIVO'
+          });
+        }
+      }
     }
     if (s.usaValorDevido && String(evento.valor_devido || '').trim() !== '') {
       var valorDevido = FOS.Normalize.valor(evento.valor_devido);

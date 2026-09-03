@@ -67,7 +67,7 @@
     MOVIMENTACAO_COM_TERCEIRO: 'MOVIMENTACAO_COM_TERCEIRO'
   };
 
-  /** Tipos de evento manual (aba 11). Exatamente nove. */
+  /** Tipos de evento manual (aba 11). Exatamente onze. */
   var TIPO_EVENTO = {
     SAQUE_TRADING: 'SAQUE_TRADING',
     GASTO_EXTRAORDINARIO: 'GASTO_EXTRAORDINARIO',
@@ -77,7 +77,12 @@
     APORTE_POSICAO: 'APORTE_POSICAO',
     RETIRADA_POSICAO: 'RETIRADA_POSICAO',
     NOVO_PASSIVO: 'NOVO_PASSIVO',
-    AMORTIZACAO_PASSIVO: 'AMORTIZACAO_PASSIVO'
+    AMORTIZACAO_PASSIVO: 'AMORTIZACAO_PASSIVO',
+    // Passivo brownfield: dívida que já existia quando os livros do Finance
+    // OS foram abertos. Nunca concilia — não há crédito bancário a provar.
+    SALDO_INICIAL_PASSIVO: 'SALDO_INICIAL_PASSIVO',
+    // Correção administrativa do saldo aberto. Nunca movimenta caixa.
+    CORRECAO_PASSIVO: 'CORRECAO_PASSIVO'
   };
 
   /** Tipos de evento do ledger de posições (aba 32). */
