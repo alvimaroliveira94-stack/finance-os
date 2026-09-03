@@ -16,6 +16,7 @@ política financeira aprovada explicitamente e que o código implementa como est
 | [0004](0004-entrada-humana.md) | Entrada humana: a planilha oferece conveniência, o código guarda a verdade | aceito | Lista fechada vs. validação, erro nunca silencioso, tabela em vez de formulário |
 | [0005](0005-fila-como-protocolo.md) | Fila de revisão como protocolo de decisão | aceito | Pergunta por origem do item, `DESCARTAR`, cancelar não resolve, correção posterior |
 | [0006](0006-superficie-operacional.md) | Superfície operacional de quatro abas | aceito | Abas visíveis, navegação por menu, restauração canônica |
+| [0007](0007-calibracao-de-classificacao.md) | Calibração da classificação: a regra nasce da decisão, com escopo exato | aceito | Assinatura segura, IGUAL sobre assinatura, três modos, cinco portões, correção fail-safe |
 
 ## Como ler
 
@@ -28,6 +29,9 @@ Os pares **0005/0006** e **0003/0002** tratam de assuntos vizinhos e foram
 mantidos separados de propósito: fila é decisão de domínio e superfície é decisão
 de produto; ciclo de vida de parâmetro é configuração e política de câmbio é
 regra financeira. Podem evoluir e ser superseded independentemente.
+
+O **0007** é o único ainda não implantado em produção: o código está construído e
+testado, e a mutação da planilha real depende de validação controlada.
 
 ## Convenção
 

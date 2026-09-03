@@ -35,6 +35,9 @@
       case 'valor': return tx.valor;
       case 'valor_absoluto': return Math.abs(Number(tx.valor));
       case 'conta_id': return tx.conta_id;
+      // Assinatura segura da movimentação. É o campo que uma regra calibrada
+      // usa com IGUAL: casa o padrão exato aprovado, e nada além dele.
+      case 'assinatura': return FOS.Calibration.assinatura(tx).chave;
       default: return null;
     }
   }

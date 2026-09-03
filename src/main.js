@@ -57,6 +57,7 @@ function onOpen() {
     .addItem('Atualizar abas', 'fosAtualizarAbas')
     .addSeparator()
     .addItem('Reclassificar movimentação', 'fosReclassificarMovimentacao')
+    .addItem('Calibrar classificação', 'fosCalibrarClassificacao')
     .addSubMenu(ui.createMenu('Abrir entrada')
       .addItem('Eventos manuais', 'fosAbrirEventosManuais')
       .addItem('Saldos de trading', 'fosAbrirSaldosTrading')
@@ -293,6 +294,163 @@ function fosAbrirSaldosTrading() {
 
 function fosAbrirConfiguracao() {
   _fosAbrirEntrada(FOS.App.Bootstrap.ABAS_DE_ENTRADA.CONFIGURACAO);
+}
+
+/** Uma linha de exemplo dentro do diálogo de calibração. */
+function _fosLinhaExemplo(e) {
+  return '  ' + e.data + '  ' + _fosValor(e.valor) + '  ' + String(e.descricao || '').slice(0, 46);
+}
+
+/**
+ * Texto do diálogo de um grupo de calibração.
+ *
+ * Mostra a evidência histórica porque é ela que decide se o padrão pode
+ * virar regra. Os identificadores numéricos observados aparecem como
+ * contexto para a sua decisão — nunca como chave de agrupamento.
+ */
+function _fosTextoGrupo(grupo, indice, total) {
+  var linhas = [
+    'Grupo ' + indice + ' de ' + total + ' — ' + grupo.quantidade + ' item(ns), soma ' + _fosValor(grupo.soma),
+    grupo.tipo + ' · ' + grupo.contraparte + ' · ' + grupo.direcao,
+    ''
+  ];
+  grupo.exemplos.forEach(function (e) { linhas.push(_fosLinhaExemplo(e)); });
+
+  var observados = Object.keys(grupo.observado || {});
+  if (observados.length) {
+    linhas.push('  (identificadores observados: '
+      + observados.map(function (n) { return n + '×' + grupo.observado[n]; }).join(' ') + ')');
+  }
+  linhas.push('');
+
+  var est = grupo.estabilidade;
+  if (est.estado === 'INEDITO') {
+    linhas.push('Histórico: nenhuma ocorrência anterior.');
+  } else if (est.estado === 'COERENTE') {
+    linhas.push('Histórico: ' + est.ocorrencias + ' ocorrência(s), sempre ' + est.categoria + '.');
+  } else {
+    linhas.push('Histórico: ' + est.ocorrencias + ' ocorrência(s) com categorias DIVERGENTES ('
+      + Object.keys(est.categorias).join(', ') + ').');
+    linhas.push('Padrão semanticamente instável: não pode virar regra automática.');
+  }
+  if (grupo.regra_vigente) {
+    linhas.push('Regra vigente: ' + grupo.regra_vigente.regra_id + ' v' + grupo.regra_vigente.versao
+      + ' -> ' + grupo.regra_vigente.categoria + '.');
+  }
+
+  linhas.push('');
+  linhas.push('Escreva a categoria:');
+  linhas.push('  ' + FOS.Constants.values(FOS.Constants.CATEGORIA).join(', '));
+  linhas.push('');
+  linhas.push('  CATEGORIA               classifica só agora, sem criar regra');
+  if (grupo.pode_aprender) {
+    linhas.push('  CATEGORIA APRENDER      classifica e ensina para os próximos meses');
+  }
+  if (grupo.regra_vigente) {
+    linhas.push('  CATEGORIA CORRIGIR      corrige a regra vigente (vale a partir de agora)');
+  }
+  linhas.push('  PULAR                   não altera nada');
+  linhas.push('');
+  linhas.push('Cancelar encerra sem gravar nada.');
+  return linhas.join('\n');
+}
+
+/**
+ * Calibrar classificação: única porta para ensinar o sistema a classificar.
+ *
+ * Percorre os grupos de pendências abertas, uma decisão por grupo, acumula
+ * tudo e só aplica depois de uma confirmação única. Cancelar em qualquer
+ * ponto antes dela não grava nada — nem regra, nem resolução.
+ *
+ * Classificar não é aprender: escrever só a categoria resolve o mês; ensinar
+ * exige a palavra APRENDER. A mesma contraparte pode ter naturezas
+ * financeiras diferentes ao longo do tempo, então persistir é decisão à parte.
+ *
+ * A aba 20_REGRAS_CLASSIFICACAO permanece interna: quem escreve nela é o
+ * workflow, nunca a mão.
+ */
+function fosCalibrarClassificacao() {
+  var ui = _fosUi();
+  var amb = _fosAmbiente();
+  var grupos = amb.workflows.gruposDeCalibracao();
+
+  if (!grupos.length) {
+    ui.alert('Calibrar classificação',
+      'Nada a calibrar. Não há pendência de classificação em aberto.', ui.ButtonSet.OK);
+    return;
+  }
+
+  var decisoes = [];
+  var naoEntendidas = [];
+  for (var i = 0; i < grupos.length; i++) {
+    var resposta = ui.prompt('Calibrar classificação',
+      _fosTextoGrupo(grupos[i], i + 1, grupos.length), ui.ButtonSet.OK_CANCEL);
+    if (resposta.getSelectedButton() !== ui.Button.OK) {
+      ui.alert('Calibrar classificação',
+        'Encerrado por você. Nada foi gravado: nenhuma regra criada e nenhum item resolvido.',
+        ui.ButtonSet.OK);
+      return;
+    }
+    var leitura = FOS.Calibration.interpretarResposta(grupos[i], resposta.getResponseText());
+    if (!leitura.ok) {
+      naoEntendidas.push(grupos[i].contraparte + ': ' + leitura.erro);
+      continue;
+    }
+    if (leitura.decisao.modo !== FOS.Calibration.MODO.PULAR) decisoes.push(leitura.decisao);
+  }
+
+  if (!decisoes.length) {
+    ui.alert('Calibrar classificação',
+      'Nenhuma decisão a aplicar.'
+      + (naoEntendidas.length ? '\n\nNão entendidas:\n- ' + naoEntendidas.join('\n- ') : ''),
+      ui.ButtonSet.OK);
+    return;
+  }
+
+  var aprender = decisoes.filter(function (d) { return d.modo === FOS.Calibration.MODO.APRENDER; });
+  var agora = decisoes.filter(function (d) { return d.modo === FOS.Calibration.MODO.SO_AGORA; });
+  var confirmacao = ui.alert('Confirmar calibração',
+    'Classificar só agora: ' + agora.length + ' grupo(s)'
+    + '\nClassificar e aprender: ' + aprender.length + ' grupo(s)'
+    + (naoEntendidas.length ? '\nNão entendidas (seguem abertas): ' + naoEntendidas.length : '')
+    + '\n\nAs regras aprendidas passam a classificar automaticamente os próximos meses.'
+    + '\nAplicar?', ui.ButtonSet.YES_NO);
+  if (confirmacao !== ui.Button.YES) {
+    ui.alert('Calibrar classificação', 'Cancelado. Nada foi gravado.', ui.ButtonSet.OK);
+    return;
+  }
+
+  try {
+    var r = amb.workflows.calibrarClassificacao({ decisoes: decisoes, ator: 'USUARIO' });
+    var linhas = [
+      'Regras criadas/corrigidas: ' + r.aprendidas.length,
+      'Resolvidos por regra: ' + r.resolvidosPorRegra.length,
+      'Resolvidos só agora: ' + r.resolvidosSoAgora.length,
+      'Ainda abertos: ' + r.aindaAbertos
+    ];
+    if (r.rebaixadas.length) {
+      linhas.push('');
+      linhas.push('Não viraram regra (' + r.rebaixadas.length + '), classificados só agora:');
+      r.rebaixadas.slice(0, 8).forEach(function (x) {
+        linhas.push('- ' + x.chave.split(' | ')[1] + ': ' + x.motivo);
+      });
+    }
+    if (r.erros.length) {
+      linhas.push('');
+      linhas.push('Erros (' + r.erros.length + '):');
+      r.erros.slice(0, 8).forEach(function (e) {
+        linhas.push('- ' + e.item_id + ': ' + e.codigo);
+      });
+    }
+    if (naoEntendidas.length) {
+      linhas.push('');
+      linhas.push('Não entendidas, seguem abertas:');
+      naoEntendidas.slice(0, 8).forEach(function (t) { linhas.push('- ' + t); });
+    }
+    ui.alert('Calibração aplicada', linhas.join('\n'), ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('Não foi possível calibrar', e.message, ui.ButtonSet.OK);
+  }
 }
 
 /**

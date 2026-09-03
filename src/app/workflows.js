@@ -584,7 +584,9 @@
             categoria: params.categoria,
             subcategoria: params.subcategoria,
             motivo: 'RESOLUCAO_FILA:' + itemId,
-            ator: params.ator
+            ator: params.ator,
+            regra_id: params.regra_id,
+            regra_versao: params.regra_versao
           });
       } else if (decisao === 'CONCILIAR') {
         if (!params.fingerprint) {
@@ -654,12 +656,15 @@
         FOS.Core.fail('PERIODO_FECHADO', 'Competência já fechada: ' + competencia);
       }
 
+      // A procedência é opcional e só chega preenchida quando quem resolveu foi
+      // uma regra (reprocessamento da fila). Sem ela, a decisão é manual — e o
+      // ledger não pode dizer que uma regra classificou o que a pessoa classificou.
       var nova = FOS.Ledger.novaLinha(staging, {
         categoria: categoria,
         subcategoria: params.subcategoria || '',
         universo: FOS.Rules.UNIVERSO_POR_CATEGORIA[categoria],
-        regra_id: 'MANUAL',
-        regra_versao: '',
+        regra_id: params.regra_id || 'MANUAL',
+        regra_versao: params.regra_versao || '',
         confianca: 1
       }, agora, params.ator || 'USUARIO');
       nova.motivo_versao = params.motivo || 'CLASSIFICACAO_MANUAL';
@@ -1180,6 +1185,376 @@
       };
     }
 
+    /** Confiança mínima vigente, com o padrão do domínio quando ausente. */
+    function confiancaMinima(config) {
+      var v = config.param('CONFIANCA_MINIMA_CLASSIFICACAO').value;
+      return v === null ? 0.9 : Number(v);
+    }
+
+    /**
+     * Grupos de calibração: itens ABERTOS de classificação, agrupados por
+     * assinatura segura, com a evidência histórica de cada um. Só leitura.
+     */
+    function gruposDeCalibracao() {
+      var abertos = FOS.Queue.abertos(repo.fila());
+      var grupos = FOS.Calibration.agrupar(abertos, repo.staging());
+      var correntes = FOS.Ledger.visaoCorrente(repo.ledger());
+      var regras = repo.regras();
+      return grupos.map(function (g) {
+        var est = FOS.Calibration.estabilidade(g.chave, correntes);
+        var vigentes = FOS.Calibration.vigentesDaAssinatura(regras, g.chave);
+        return Object.assign({}, g, {
+          estabilidade: est,
+          regra_vigente: vigentes.length ? {
+            regra_id: String(vigentes[0].regra_id),
+            versao: Number(vigentes[0].versao) || 1,
+            categoria: String(vigentes[0].categoria)
+          } : null,
+          // Aprender fica disponível só quando o histórico não desaconselha.
+          pode_aprender: est.estado !== FOS.Calibration.ESTADO.INSTAVEL
+        });
+      });
+    }
+
+    /**
+     * Cria ou corrige a regra calibrada de uma assinatura.
+     *
+     * NÃO é transação atômica — o Sheets não oferece isso. É uma transição
+     * fail-safe em dois passos, nesta ordem:
+     *
+     *   (a) desativa a versão vigente da identidade;
+     *   (b) só então grava a nova versão ativa.
+     *
+     * Falha entre (a) e (b) deixa a identidade SEM regra ativa: nenhuma linha
+     * é classificada em silêncio, as ocorrências caem normalmente na fila, e o
+     * erro é explícito. Repetir a operação completa a correção sem duplicar,
+     * porque (a) vira no-op e a identidade é preservada.
+     */
+    function aplicarRegraCalibrada(p) {
+      var agora = relogio.agora();
+      var categoria = String(p.categoria || '').trim().toUpperCase();
+      var regras = repo.regras();
+      var vigentes = FOS.Calibration.vigentesDaAssinatura(regras, p.chave);
+
+      var jaIgual = vigentes.filter(function (r) {
+        return String(r.categoria).toUpperCase() === categoria;
+      });
+      if (jaIgual.length) {
+        return {
+          resultado: 'JA_VIGENTE', alterado: false,
+          regra_id: String(jaIgual[0].regra_id), versao: Number(jaIgual[0].versao) || 1
+        };
+      }
+
+      var regraId = FOS.Calibration.idDaAssinatura(regras, p.chave)
+        || FOS.Calibration.proximoId(regras);
+      var motivo = String(p.motivo || 'CALIBRACAO');
+
+      // (a) desativar — auditado e persistido por si, para que uma falha em (b)
+      // deixe rastro de onde a transição parou.
+      var desativadas = 0;
+      if (vigentes.length && repo.planilha.atualizarCampos) {
+        desativadas = repo.planilha.atualizarCampos(A.REGRAS, function (linha) {
+          return String(linha.regra_id) === regraId
+            && FOS.Config.parseBool(linha.ativo) === true;
+        }, FOS.Calibration.camposDeDesativacao('CORRIGIDA_POR_CALIBRACAO: ' + motivo, agora));
+        auditoria.registrar({
+          acao: 'DESATIVAR_REGRA_CALIBRADA',
+          ator: p.ator || ator,
+          entidade: A.REGRAS,
+          entidade_id: regraId,
+          antes: { versoes_ativas: vigentes.length, categoria: String(vigentes[0].categoria) },
+          depois: { versoes_ativas: 0 },
+          resultado: 'OK',
+          detalhe: { assinatura: p.chave, motivo: motivo, passo: 'A_DESATIVAR' }
+        });
+        auditoria.persistir();
+      }
+
+      // (b) criar a nova versão
+      var versao = FOS.Calibration.versaoDe(repo.regras(), regraId) + 1;
+      var linha = FOS.Calibration.linhaDeRegra({
+        regraId: regraId, versao: versao, chave: p.chave, direcao: p.direcao,
+        categoria: categoria, subcategoria: p.subcategoria,
+        agora: agora, desde: p.desde,
+        observacao: 'Calibrada de ' + p.quantidade + ' item(ns) da fila. ' + motivo
+      });
+      repo.anexar(A.REGRAS, [linha]);
+      auditoria.registrar({
+        acao: 'CALIBRAR_REGRA',
+        ator: p.ator || ator,
+        entidade: A.REGRAS,
+        entidade_id: regraId,
+        antes: vigentes.length ? { versao: Number(vigentes[0].versao) || 1, categoria: String(vigentes[0].categoria) } : null,
+        depois: { versao: versao, categoria: categoria, assinatura: p.chave },
+        resultado: desativadas ? 'CORRIGIDA' : 'CRIADA',
+        detalhe: { assinatura: p.chave, itens: p.quantidade, motivo: motivo, passo: 'B_CRIAR' }
+      });
+      auditoria.persistir();
+
+      return {
+        resultado: desativadas ? 'CORRIGIDA' : 'CRIADA', alterado: true,
+        regra_id: regraId, versao: versao, desativadas: desativadas
+      };
+    }
+
+    /**
+     * Reaplica as regras vigentes SOMENTE aos itens ABERTOS da fila.
+     *
+     * Item já resolvido não é tocado; competência fechada é recusada pelo
+     * caminho normal (classificarPendente); o que não casa com confiança
+     * suficiente continua aberto.
+     */
+    function reprocessarFila(params) {
+      var p = params || {};
+      var config = repo.config();
+      var minima = confiancaMinima(config);
+      var regras = repo.regras();
+      var porFingerprint = {};
+      repo.staging().forEach(function (l) { porFingerprint[String(l.fingerprint)] = l; });
+
+      var abertos = FOS.Queue.abertos(repo.fila());
+      var resolvidos = [];
+      var mantidos = [];
+      var erros = [];
+
+      abertos.forEach(function (item) {
+        if (String(item.origem || '').toUpperCase() !== C.ORIGEM_FILA.CLASSIFICACAO) {
+          mantidos.push({ item_id: String(item.item_id), motivo: 'ORIGEM_NAO_REPROCESSAVEL' });
+          return;
+        }
+        var linha = porFingerprint[String(item.referencia)];
+        if (!linha) {
+          mantidos.push({ item_id: String(item.item_id), motivo: 'LINHA_NAO_ENCONTRADA' });
+          return;
+        }
+        var decisao = FOS.Rules.classificar(linha, regras, minima);
+        if (!decisao.decidido) {
+          mantidos.push({ item_id: String(item.item_id), motivo: decisao.motivo });
+          return;
+        }
+        try {
+          resolverItemFila({
+            item_id: String(item.item_id),
+            decisao: 'CLASSIFICAR',
+            categoria: decisao.categoria,
+            ator: p.ator || ator,
+            regra_id: decisao.regra_id,
+            regra_versao: decisao.regra_versao
+          });
+          resolvidos.push({
+            item_id: String(item.item_id), categoria: decisao.categoria,
+            regra_id: decisao.regra_id, regra_versao: decisao.regra_versao
+          });
+        } catch (e) {
+          erros.push({
+            item_id: String(item.item_id),
+            codigo: e.code || 'ERRO', mensagem: e.message
+          });
+        }
+      });
+
+      auditoria.registrar({
+        acao: 'REPROCESSAR_FILA',
+        ator: p.ator || ator,
+        entidade: A.FILA_REVISAO,
+        entidade_id: '',
+        antes: { abertos: abertos.length },
+        depois: { resolvidos: resolvidos.length, ainda_abertos: abertos.length - resolvidos.length },
+        resultado: erros.length ? 'PARCIAL' : 'OK',
+        detalhe: { erros: erros, confianca_minima: minima }
+      });
+      auditoria.persistir();
+
+      return {
+        resolvidos: resolvidos, mantidos: mantidos, erros: erros,
+        abertosAntes: abertos.length,
+        abertosDepois: FOS.Queue.abertos(repo.fila()).length
+      };
+    }
+
+    /**
+     * Calibrar classificação: aplica as decisões tomadas grupo a grupo.
+     *
+     * Três modos, e a persistência exige escolha explícita — classificar não
+     * é aprender. A mesma contraparte humana pode ter naturezas financeiras
+     * diferentes ao longo do tempo, então ensinar uma regra é decisão à parte.
+     *
+     * @param {{decisoes:Array<{chave,categoria,modo,confirmouCorrecao}>, ator:string}} params
+     */
+    function calibrarClassificacao(params) {
+      var p = params || {};
+      var decisoes = p.decisoes || [];
+      var minima = confiancaMinima(repo.config());
+      var grupos = {};
+      gruposDeCalibracao().forEach(function (g) { grupos[g.chave] = g; });
+
+      var aprendidas = [];
+      var rebaixadas = [];
+      var ignoradas = [];
+
+      // Universo do portão de escopo: as linhas por trás das pendências
+      // ABERTAS de classificação. É contra elas que a regra candidata precisa
+      // provar que não alcança nada além do grupo aprovado. Linha já
+      // classificada não entra: ela é histórico, e quem julga o histórico é o
+      // portão de estabilidade, não o de escopo.
+      var porFingerprint = {};
+      repo.staging().forEach(function (l) { porFingerprint[String(l.fingerprint)] = l; });
+      var pendentes = FOS.Queue.abertos(repo.fila()).filter(function (item) {
+        return String(item.origem || '').toUpperCase() === C.ORIGEM_FILA.CLASSIFICACAO;
+      }).map(function (item) {
+        return porFingerprint[String(item.referencia)];
+      }).filter(function (l) { return !!l; });
+
+      // 1) Regras primeiro: quem aprender é resolvido pela própria regra,
+      //    e o ledger passa a registrar qual regra classificou a linha.
+      decisoes.forEach(function (d) {
+        var grupo = grupos[String(d.chave)];
+        if (!grupo) {
+          ignoradas.push({ chave: String(d.chave), motivo: 'GRUPO_INEXISTENTE' });
+          return;
+        }
+        if (d.modo === FOS.Calibration.MODO.PULAR) {
+          ignoradas.push({ chave: grupo.chave, motivo: 'PULADO' });
+          return;
+        }
+        if (d.modo !== FOS.Calibration.MODO.APRENDER) return;
+
+        var regras = repo.regras();
+        var candidata = FOS.Calibration.linhaDeRegra({
+          regraId: 'CANDIDATA', versao: 1, chave: grupo.chave, direcao: grupo.direcao,
+          categoria: d.categoria, agora: relogio.agora(), desde: grupo.data_min
+        });
+        var casados = pendentes.filter(function (l) {
+          return FOS.Rules.classificar(l, [candidata], minima).decidido;
+        }).length;
+
+        var veredito = FOS.Calibration.avaliarPersistencia({
+          modo: FOS.Calibration.MODO.APRENDER,
+          grupo: grupo,
+          categoria: d.categoria,
+          casados: casados,
+          estabilidade: grupo.estabilidade,
+          vigentes: FOS.Calibration.vigentesDaAssinatura(regras, grupo.chave),
+          regraId: FOS.Calibration.idDaAssinatura(regras, grupo.chave),
+          confirmouCorrecao: d.confirmouCorrecao === true
+        });
+
+        if (!veredito.ok) {
+          // Reprovado no portão: a classificação do mês continua valendo, a
+          // regra não nasce. Exceção atual nunca vira correção de regra.
+          rebaixadas.push({ chave: grupo.chave, categoria: d.categoria, motivo: veredito.motivo });
+          return;
+        }
+        aprendidas.push(Object.assign({ chave: grupo.chave, categoria: d.categoria },
+          aplicarRegraCalibrada({
+            chave: grupo.chave, direcao: grupo.direcao, categoria: d.categoria,
+            quantidade: grupo.quantidade, desde: grupo.data_min, ator: p.ator || ator,
+            motivo: veredito.correcao ? 'CORRECAO_DE_REGRA' : 'APRENDIZADO_APROVADO'
+          })));
+      });
+
+      // 2) Reprocessa a fila com as regras já gravadas.
+      var reprocessamento = reprocessarFila({ ator: p.ator || ator });
+
+      // 3) O que restou aberto e tinha decisão de "só agora" (ou foi rebaixado)
+      //    é resolvido diretamente, sem criar regra.
+      var soAgora = {};
+      decisoes.forEach(function (d) {
+        if (d.modo === FOS.Calibration.MODO.SO_AGORA) soAgora[String(d.chave)] = d.categoria;
+      });
+      rebaixadas.forEach(function (r) { soAgora[r.chave] = r.categoria; });
+
+      var resolvidosAgora = [];
+      var erros = [];
+      if (Object.keys(soAgora).length) {
+        var aindaNoStaging = {};
+        repo.staging().forEach(function (l) { aindaNoStaging[String(l.fingerprint)] = l; });
+        FOS.Queue.abertos(repo.fila()).forEach(function (item) {
+          var linha = aindaNoStaging[String(item.referencia)];
+          if (!linha) return;
+          var chave = FOS.Calibration.assinatura(linha).chave;
+          if (!soAgora[chave]) return;
+          try {
+            resolverItemFila({
+              item_id: String(item.item_id), decisao: 'CLASSIFICAR',
+              categoria: soAgora[chave], ator: p.ator || ator
+            });
+            resolvidosAgora.push({ item_id: String(item.item_id), chave: chave });
+          } catch (e) {
+            erros.push({ item_id: String(item.item_id), codigo: e.code || 'ERRO', mensagem: e.message });
+          }
+        });
+      }
+
+      auditoria.registrar({
+        acao: 'CALIBRAR_CLASSIFICACAO',
+        ator: p.ator || ator,
+        entidade: A.FILA_REVISAO,
+        entidade_id: '',
+        antes: { grupos: Object.keys(grupos).length, decisoes: decisoes.length },
+        depois: {
+          regras: aprendidas.length,
+          resolvidos_por_regra: reprocessamento.resolvidos.length,
+          resolvidos_so_agora: resolvidosAgora.length
+        },
+        resultado: (rebaixadas.length || erros.length) ? 'PARCIAL' : 'OK',
+        detalhe: { rebaixadas: rebaixadas, ignoradas: ignoradas, erros: erros }
+      });
+      auditoria.persistir();
+
+      return {
+        aprendidas: aprendidas,
+        rebaixadas: rebaixadas,
+        ignoradas: ignoradas,
+        resolvidosPorRegra: reprocessamento.resolvidos,
+        resolvidosSoAgora: resolvidosAgora,
+        erros: erros.concat(reprocessamento.erros),
+        aindaAbertos: FOS.Queue.abertos(repo.fila()).length
+      };
+    }
+
+    /**
+     * Desativa regras por identidade, preservando a linha e o histórico.
+     *
+     * Serve à política de aposentar as regras de semente sintéticas: regra
+     * financeira persistente nasce de decisão aprovada ou evidência real, não
+     * de semente. Idempotente: desativar o que já está inativo é no-op.
+     * NÃO é chamado por instalação nem por "Preparar planilha" — a mutação
+     * exige comando explícito.
+     */
+    function desativarRegras(params) {
+      var p = params || {};
+      var agora = relogio.agora();
+      var alvos = (p.regraIds || []).map(String);
+      if (!alvos.length) FOS.Core.fail('REGRAS_NAO_INFORMADAS', 'Informe quais regras desativar');
+      if (!repo.planilha.atualizarCampos) {
+        FOS.Core.fail('ESTRUTURA_DESATUALIZADA', 'A planilha não sabe atualizar campos');
+      }
+      var motivo = String(p.motivo || 'DESATIVADA_POR_DECISAO');
+      var antes = repo.regras().filter(function (r) {
+        return alvos.indexOf(String(r.regra_id)) !== -1 && FOS.Config.parseBool(r.ativo) === true;
+      }).length;
+
+      var desativadas = repo.planilha.atualizarCampos(A.REGRAS, function (linha) {
+        return alvos.indexOf(String(linha.regra_id)) !== -1
+          && FOS.Config.parseBool(linha.ativo) === true;
+      }, FOS.Calibration.camposDeDesativacao(motivo, agora));
+
+      auditoria.registrar({
+        acao: 'DESATIVAR_REGRAS',
+        ator: p.ator || ator,
+        entidade: A.REGRAS,
+        entidade_id: alvos.join(','),
+        antes: { ativas: antes },
+        depois: { ativas: 0, desativadas: desativadas },
+        resultado: 'OK',
+        detalhe: { motivo: motivo, regras: alvos }
+      });
+      auditoria.persistir();
+      return { desativadas: desativadas, alterado: desativadas > 0, regras: alvos };
+    }
+
     /**
      * Estado das taxas relevantes para uma competência.
      *
@@ -1580,6 +1955,12 @@
       compensarEventoPosicao: compensarEventoPosicao,
       diagnosticoSetup: diagnosticoSetup,
       atualizarCacheTaxas: atualizarCacheTaxas,
+      // Onda 3 — calibração
+      gruposDeCalibracao: gruposDeCalibracao,
+      calibrarClassificacao: calibrarClassificacao,
+      aplicarRegraCalibrada: aplicarRegraCalibrada,
+      reprocessarFila: reprocessarFila,
+      desativarRegras: desativarRegras,
       publicarTaxaCambio: publicarTaxaCambio,
       taxasPublicadas: taxasPublicadas,
       painel: painel,

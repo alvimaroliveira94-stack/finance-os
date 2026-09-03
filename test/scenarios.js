@@ -59,7 +59,8 @@ const CENARIOS = [
   { id: 'C49', nome: 'Publicação manual da taxa da competência' },
   { id: 'C50', nome: 'Evento manual inválido é recusado, nunca ignorado' },
   { id: 'C51', nome: 'Parâmetro depreciado sai da configuração sem perder histórico' },
-  { id: 'C52', nome: 'Superfície de quatro abas e fila totalmente abstraída' }
+  { id: 'C52', nome: 'Superfície de quatro abas e fila totalmente abstraída' },
+  { id: 'C53', nome: 'Calibração: a regra nasce da decisão, com escopo exato e persistência conquistada' }
 ];
 
 module.exports = { CENARIOS };

@@ -24,6 +24,7 @@ const ORDEM = [
   'domain/parsers.js',
   'domain/import.js',
   'domain/rules.js',
+  'domain/calibration.js',
   'domain/queue.js',
   'domain/ledger.js',
   'domain/events.js',
