@@ -1,11 +1,15 @@
-# ADR 0009 — Evolução de schema em aba já populada: append-only, nunca inserção
+# ADR 0009 — Evolução automática de schema em aba já populada: append-only, nunca inserção
 
 Status: aceito · Data: 2026-09
 
 Estende o ADR 0008 (as três colunas `valor_devido`, `vencimento`, `credor`
 que motivaram esta decisão) e não cria nenhuma máquina de migração nova —
-é uma restrição sobre como `FOS.Schema` pode crescer, imposta pelo
-comportamento já existente de `criarAba`/`lerTabela`.
+é uma restrição sobre como `FOS.Schema` pode crescer **através do bootstrap
+automático** (`criarAba`/`lerTabela`), não uma proibição permanente de
+evoluir schema por qualquer via. Uma migração explícita, versionada,
+testada e deliberadamente autorizada — fora do bootstrap automático — não
+é vedada por este ADR; só não é o que ele resolve aqui (ver "O que isto
+não resolve, de propósito").
 
 ---
 
@@ -43,11 +47,21 @@ criar máquina nova nenhuma.
 
 ## Decisão
 
-**Toda coluna nova que uma aba já populada em produção pode receber entra
+Esta regra vale para a **evolução automática de schema via
+bootstrap/`criarAba`** — o caminho que `fosSetup`/"Preparar planilha"
+executa sozinho, sem revisão linha a linha. **Toda coluna nova que uma
+aba já populada em produção pode receber, por essa via automática, entra
 sempre ao final da lista de colunas do schema, nunca no meio.** O prefixo
 de colunas que já existe em produção permanece byte a byte, na mesma
-ordem lógica, para sempre — mesmo quando a ordem "ideal" (agrupando campos
-relacionados) seria outra.
+ordem lógica, enquanto a evolução for automática — mesmo quando a ordem
+"ideal" (agrupando campos relacionados) seria outra.
+
+Registrado explicitamente, para não deixar a extensão do princípio
+implícita: **em uma aba brownfield populada, evolução automática de
+schema deve preservar posição e significado das colunas existentes.
+Mudança incompatível de schema só pode ocorrer através de migração
+explícita, versionada, testada, com plano de rollback e deliberadamente
+autorizada.**
 
 Para `11_EVENTOS_MANUAIS`: os 16 nomes de coluna e a ordem exata do commit
 `57c0eb3` (produção) são o prefixo fixo; `valor_devido`, `vencimento` e
@@ -91,11 +105,21 @@ não implementada.
 
 ## O que isto não resolve, de propósito
 
-Isto não é migração de schema genérica. Se um caso real algum dia exigir
-remover uma coluna, trocar seu tipo, ou reordenar um prefixo já em
-produção, este ADR não cobre esse caso — ele exige decisão humana nova,
-porque exigiria reescrever linhas de dado existentes, o que `criarAba`
-deliberadamente não faz.
+Isto não é migração de schema genérica, e não é uma proibição permanente
+de evoluir o schema por qualquer via. Reordenar, remover, renomear ou
+mudar o significado de uma coluna já existente numa aba populada **não é
+vedado para sempre** — é vedado como efeito colateral silencioso do
+bootstrap automático, que é o único caminho que este ADR analisa e que
+`criarAba` deliberadamente não sabe migrar.
+
+Se um caso real algum dia exigir isso, o caminho é uma **migração
+explícita**: uma decisão humana nova, versionada (seu próprio ADR ou
+revisão deste), testada com o mesmo rigor de sabotagem usado aqui, com
+plano de rollback definido antes de rodar contra produção, e autorizada
+deliberadamente antes do deploy — nunca disparada implicitamente por uma
+mudança em `FOS.Schema` seguida de "Preparar planilha". Este ADR não
+constrói esse mecanismo porque nenhum caso real o exige hoje (Human
+Authority; No Speculative Infrastructure) — não porque ele seja proibido.
 
 ## Custo aceito
 

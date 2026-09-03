@@ -18,7 +18,7 @@ política financeira aprovada explicitamente e que o código implementa como est
 | [0006](0006-superficie-operacional.md) | Superfície operacional de quatro abas | aceito | Abas visíveis, navegação por menu, restauração canônica |
 | [0007](0007-calibracao-de-classificacao.md) | Calibração da classificação: a regra nasce da decisão, com escopo exato | aceito | Assinatura segura, IGUAL sobre assinatura, três modos, cinco portões, correção fail-safe |
 | [0008](0008-passivo-minimo-canonico.md) | Passivo mínimo canônico: quanto devo é verdade de primeira classe | aceito | Subledger próprio, `valor` × `valor_devido`, custo retido sempre derivado, dedução integral do disponível, patrimônio líquido fora do MVP |
-| [0009](0009-brownfield-append-only.md) | Evolução de schema em aba já populada: append-only, nunca inserção | aceito | Prefixo de produção intocável, coluna nova sempre ao final, sem máquina de migração |
+| [0009](0009-brownfield-append-only.md) | Evolução automática de schema em aba já populada: append-only, nunca inserção | aceito | Prefixo de produção intocável só pelo bootstrap automático, coluna nova sempre ao final; mudança incompatível exige migração explícita e autorizada, não é vedada para sempre |
 
 ## Como ler
 
