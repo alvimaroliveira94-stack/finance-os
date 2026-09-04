@@ -297,10 +297,23 @@
      * não foram fechadas. Só conta a partir de COMPETENCIA_INICIAL_CAIXA_VIDA,
      * para que histórico importado de antes do início do sistema não bloqueie
      * nada para sempre.
+     *
+     * Fail-closed: sem essa fronteira (ausente, ou em formato que
+     * Config.build não normalizou para YYYY-MM), não há como decidir com
+     * segurança se um mês anterior está pendente — fechar apoiado nisso
+     * seria construir sobre uma ordem que ninguém confirmou. Por isso esta
+     * função lança em vez de seguir sem filtro.
      */
     function competenciasAnterioresEmAberto(competencia) {
       var config = repo.config();
-      var inicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value;
+      var compInicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL);
+      if (compInicial.value === null) {
+        FOS.Core.fail('COMPETENCIA_INICIAL_INDISPONIVEL',
+          'Sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' válida não é possível '
+            + 'determinar competências anteriores em aberto.',
+          { reason: compInicial.reason });
+      }
+      var inicial = compInicial.value;
       var fechadas = {};
       competenciasFechadas().forEach(function (c) { fechadas[c] = true; });
 
@@ -308,7 +321,7 @@
       FOS.Ledger.visaoCorrente(repo.ledger()).forEach(function (l) {
         var comp = FOS.Dates.competenciaOf(String(l.data_origem));
         if (comp >= String(competencia)) return;
-        if (inicial && comp < String(inicial)) return;
+        if (comp < inicial) return;
         if (fechadas[comp]) return;
         comMovimento[comp] = true;
       });

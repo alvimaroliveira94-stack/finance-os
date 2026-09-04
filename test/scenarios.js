@@ -62,7 +62,8 @@ const CENARIOS = [
   { id: 'C52', nome: 'Superfície de quatro abas e fila totalmente abstraída' },
   { id: 'C53', nome: 'Calibração: a regra nasce da decisão, com escopo exato e persistência conquistada' },
   { id: 'C54', nome: 'Passivo mínimo: obrigação com terceiro, recebido ≠ devido, sem contaminar patrimônio' },
-  { id: 'C55', nome: 'Passivo brownfield: saldo inicial pré-existente e correção administrativa sem movimentar caixa' }
+  { id: 'C55', nome: 'Passivo brownfield: saldo inicial pré-existente e correção administrativa sem movimentar caixa' },
+  { id: 'C56', nome: 'Competência inicial: fronteira YYYY-MM sobrevive à conversão Date do Sheets, fail-closed quando ausente/inválida' }
 ];
 
 module.exports = { CENARIOS };

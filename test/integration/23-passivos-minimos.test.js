@@ -22,6 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const FOS = require('../_load');
 const dataset = require('../fixtures/dataset');
+const { corromperParametroComoDateDoSheets } = require('../fixtures/fakes');
 
 const C = FOS.Constants;
 const A = C.ABAS_INTERNAS;
@@ -1429,4 +1430,78 @@ describe('Passivo brownfield: não-regressão', () => {
     assert.deep(r.ignorados.map((i) => i.evento_id).sort(), ['EVB1', 'EVB2']);
     assert.equal(ctx.repositorio.passivos().length, antes, 'sem duplicar');
   });
+});
+
+/**
+ * Reprodução exata do smoke real: `SALDO_INICIAL_PASSIVO` lançava
+ * `DomainError: COMPETENCIA_INVALIDA` quando COMPETENCIA_INICIAL_CAIXA_VIDA
+ * chegava corrompida pelo Sheets (Date em vez de texto YYYY-MM). Ver
+ * test/integration/15-auditoria-final.test.js para os mesmos consumidores
+ * cobertos do lado de caixaVida/fecharCompetencia; aqui é especificamente
+ * o caminho de FOS.Events.validar que o smoke encontrou primeiro.
+ */
+describe('Passivo brownfield: SALDO_INICIAL_PASSIVO sobrevive à competência inicial corrompida pelo Sheets', () => {
+  function ctxComCompetenciaCorrompida() {
+    const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-08-10T12:00:00Z' });
+    corromperParametroComoDateDoSheets(ctx.planilha, 'COMPETENCIA_INICIAL_CAIXA_VIDA', new Date(2026, 7, 1));
+    return ctx;
+  }
+
+  it('validar() não lança mais — reprodução exata do smoke (evento.data = 2026-08-01)',
+    { scenario: 'C56' }, () => {
+      const ctx = ctxComCompetenciaCorrompida();
+      const config = ctx.repositorio.config();
+      // Confirma a premissa do smoke: a célula corrompida chega como
+      // "2026-08-01" no Config, não "2026-08".
+      assert.equal(config.param('COMPETENCIA_INICIAL_CAIXA_VIDA').value, '2026-08',
+        'depois da normalização em Config.build, já não é mais 2026-08-01');
+
+      const evento = dataset.evento({
+        evento_id: 'EVB_SMOKE', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-08-01',
+        referencia_id: 'PAS_SMOKE', credor: 'CREDOR SMOKE', vencimento: '2027-01-01', valor: 1000
+      });
+      // Chamada direta, sem try/catch: se validar() lançar (o bug do
+      // smoke), a exceção propaga e este teste falha sozinho — é
+      // exatamente esse o comportamento que não pode mais acontecer.
+      const r = FOS.Events.validar(evento, config);
+      assert.ok(r.ok, JSON.stringify(r.erros));
+    });
+
+  it('evento dentro da abertura é aceito, incluindo o último dia do mês (2026-08-31)',
+    { scenario: 'C56' }, () => {
+      const ctx = ctxComCompetenciaCorrompida();
+      const config = ctx.repositorio.config();
+      const r = FOS.Events.validar(dataset.evento({
+        evento_id: 'X', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-08-31',
+        referencia_id: 'PAS_X', credor: 'CREDOR X', vencimento: '2027-01-01', valor: 1000
+      }), config);
+      assert.ok(r.ok, JSON.stringify(r.erros));
+    });
+
+  it('evento depois da abertura recusa com SALDO_INICIAL_FORA_DA_ABERTURA (2026-09-01)',
+    { scenario: 'C56' }, () => {
+      const ctx = ctxComCompetenciaCorrompida();
+      const config = ctx.repositorio.config();
+      const r = FOS.Events.validar(dataset.evento({
+        evento_id: 'X', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-09-01',
+        referencia_id: 'PAS_X', credor: 'CREDOR X', vencimento: '2027-01-01', valor: 1000
+      }), config);
+      assert.notOk(r.ok);
+      assert.includes(r.erros.map((e) => e.codigo), 'SALDO_INICIAL_FORA_DA_ABERTURA');
+    });
+
+  it('materializarEventos() também não lança — ponta a ponta via o workflow real',
+    { scenario: 'C56' }, () => {
+      const ctx = ctxComCompetenciaCorrompida();
+      ctx.repositorio.anexar(A.EVENTOS_MANUAIS, [dataset.evento({
+        evento_id: 'EVB_SMOKE2', tipo_evento: 'SALDO_INICIAL_PASSIVO', data: '2026-08-01',
+        referencia_id: 'PAS_SMOKE2', credor: 'CREDOR SMOKE 2', vencimento: '2027-01-01', valor: 1000
+      })]);
+      // Idem: chamada direta, sem try/catch — uma exceção aqui já reprova
+      // o teste sozinha.
+      ctx.workflows.conciliarEventos();
+      const r = ctx.workflows.materializarEventos();
+      assert.equal(r.passivos.length, 1);
+      assert.equal(r.invalidos.length, 0, JSON.stringify(r.invalidos));
+    });
 });

@@ -18,6 +18,27 @@ function comoCelulaDoSheets(valor) {
 }
 
 /**
+ * Simula o mesmo bug para um parâmetro TEXTO de 00_CONFIG_PARAMETROS cujo
+ * contrato lógico é "AAAA-MM" (só COMPETENCIA_INICIAL_CAIXA_VIDA hoje): o
+ * Sheets pode ter interpretado "2026-08" digitado como data e guardado 1º
+ * de agosto. Sobrescreve a célula `valor` da linha PARAMETRO/chave com um
+ * objeto Date real — a mesma forma que getValues() devolveria — direto no
+ * armazenamento interno do fake, sem tocar `anexarLinhas`. Uma leitura
+ * seguinte (`lerTabela`/`repositorio.config()`) continua passando pelo
+ * mesmo `normalizarCelula` do adaptador real: nada aqui pula o adaptador,
+ * só planta a condição de partida que ele veria numa planilha real.
+ */
+function corromperParametroComoDateDoSheets(planilha, chave, dataDate) {
+  const aba = planilha._abas[FOS.Constants.ABAS_INTERNAS.CONFIG];
+  const idxSecao = aba.headers.indexOf('secao');
+  const idxChave = aba.headers.indexOf('chave');
+  const idxValor = aba.headers.indexOf('valor');
+  const linha = (aba.linhas || []).find((l) => l[idxSecao] === 'PARAMETRO' && l[idxChave] === chave);
+  if (!linha) throw new Error('Parâmetro não encontrado em 00_CONFIG_PARAMETROS: ' + chave);
+  linha[idxValor] = dataDate;
+}
+
+/**
  * Planilha em memória: tabelas nomeadas com cabeçalho na primeira linha.
  * @param {{datasComoDate?:boolean}} [opcoes] com datasComoDate a planilha
  *   devolve Date onde houver data, como o Sheets real faz.
@@ -200,4 +221,6 @@ function uiFake(respostas) {
   };
 }
 
-module.exports = { planilhaFake, driveFake, urlFetchFake, uiFake, comoCelulaDoSheets };
+module.exports = {
+  planilhaFake, driveFake, urlFetchFake, uiFake, comoCelulaDoSheets, corromperParametroComoDateDoSheets
+};

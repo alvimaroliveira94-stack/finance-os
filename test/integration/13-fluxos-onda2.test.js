@@ -2,7 +2,7 @@
 const { describe, it, assert } = globalThis.__fosTest;
 const FOS = require('../_load');
 const dataset = require('../fixtures/dataset');
-const { urlFetchFake } = require('../fixtures/fakes');
+const { urlFetchFake, corromperParametroComoDateDoSheets } = require('../fixtures/fakes');
 
 const C = FOS.Constants;
 const A = C.ABAS_INTERNAS;
@@ -352,6 +352,56 @@ describe('Diagnóstico de setup', () => {
     assert.ok(bloqueio, 'o parâmetro bloqueado precisa aparecer');
     assert.equal(bloqueio.reason, 'AGUARDANDO_SALDO_REAL');
     assert.includes(bloqueio.impacto, 'caixa de vida');
+  });
+
+  it('COMPETENCIA_INICIAL_CAIXA_VIDA válida não gera falso positivo', { scenario: 'C56' }, () => {
+    const ctx = dataset.montarWorkbook({ comDados: false });
+    const diag = ctx.workflows.diagnosticoSetup();
+    assert.ok(diag.pronto, JSON.stringify(diag.bloqueios));
+    assert.equal(diag.bloqueios.filter((b) => b.chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA').length, 0);
+  });
+
+  it('COMPETENCIA_INICIAL_CAIXA_VIDA corrompida pelo Sheets (Date), mas recuperável, NÃO bloqueia',
+    { scenario: 'C56' }, () => {
+      // É exatamente isto que a normalização em Config.build resolve: a
+      // célula chegou como Date (equivalente a "2026-08-01"), mas
+      // parseCompetencia deriva "2026-08" corretamente — não é um bloqueio,
+      // porque não é mais um parâmetro indisponível depois do Config.build.
+      const ctx = dataset.montarWorkbook({ comDados: false });
+      corromperParametroComoDateDoSheets(ctx.planilha, 'COMPETENCIA_INICIAL_CAIXA_VIDA', new Date(2026, 7, 1));
+      const diag = ctx.workflows.diagnosticoSetup();
+      assert.ok(diag.pronto, JSON.stringify(diag.bloqueios));
+      assert.equal(diag.bloqueios.filter((b) => b.chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA').length, 0);
+    });
+
+  it('COMPETENCIA_INICIAL_CAIXA_VIDA em formato irreconhecível vira bloqueio, não passa em silêncio',
+    { scenario: 'C56' }, () => {
+      // Este é o caso que diagnosticoSetup precisa pegar e, antes desta
+      // correção, não pegava: um valor PRESENTE mas num formato que
+      // Config.build não conseguiu normalizar. O diagnóstico usa
+      // repo.config() — o mesmo Config normalizado que todo o resto do
+      // sistema usa, não um segundo mecanismo de validação — e por isso já
+      // pega este caso sem nenhuma mudança no próprio diagnosticoSetup.
+      const ctx = dataset.montarWorkbook({ comDados: false });
+      ctx.repositorio.substituir(A.CONFIG, ctx.repositorio.configLinhas().map((r) => (
+        r.chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA' ? Object.assign({}, r, { valor: 'AGOSTO/2026' }) : r
+      )));
+      const diag = ctx.workflows.diagnosticoSetup();
+      assert.notOk(diag.pronto);
+      const bloqueio = diag.bloqueios.filter((b) => b.chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA')[0];
+      assert.ok(bloqueio, 'formato irreconhecível precisa aparecer como bloqueio: '
+        + JSON.stringify(diag.bloqueios));
+      assert.equal(bloqueio.reason, 'COMPETENCIA_INICIAL_FORMATO_INVALIDO');
+      assert.includes(bloqueio.impacto, 'caixa');
+    });
+
+  it('COMPETENCIA_INICIAL_CAIXA_VIDA ausente vira bloqueio', { scenario: 'C56' }, () => {
+    const ctx = dataset.montarWorkbook({ comDados: false });
+    ctx.repositorio.substituir(A.CONFIG, ctx.repositorio.configLinhas()
+      .filter((r) => r.chave !== 'COMPETENCIA_INICIAL_CAIXA_VIDA'));
+    const diag = ctx.workflows.diagnosticoSetup();
+    assert.notOk(diag.pronto);
+    assert.ok(diag.bloqueios.some((b) => b.chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA'));
   });
 
   it('separa avisos de bloqueios', { scenario: 'C44' }, () => {

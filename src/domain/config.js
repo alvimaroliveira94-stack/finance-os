@@ -89,13 +89,29 @@
           else if (tipo === 'BOOLEANO') parsed = parseBool(r.valor);
           else parsed = (r.valor === undefined || r.valor === null || r.valor === '') ? null : String(r.valor);
         }
+        // COMPETENCIA_INICIAL_CAIXA_VIDA é a única chave com contrato de
+        // competência (YYYY-MM). O Google Sheets pode ter formatado a
+        // célula como Date (usuário digitou "2026-08", o Sheets guardou 1º
+        // de agosto), e o adaptador devolve "YYYY-MM-DD" nesse caso.
+        // Normalizado aqui, uma única vez: nenhum consumidor de
+        // config.param('COMPETENCIA_INICIAL_CAIXA_VIDA') precisa saber que
+        // isso pode acontecer — a partir daqui .value é sempre YYYY-MM
+        // válido ou null. Não migra a célula, não muda o tipo declarado.
+        var competenciaFormatoInvalido = false;
+        if (chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA' && !bloqueado && parsed !== null) {
+          var competenciaNormalizada = FOS.Dates.parseCompetencia(parsed);
+          competenciaFormatoInvalido = competenciaNormalizada === null;
+          parsed = competenciaNormalizada;
+        }
         parametros[chave] = {
           chave: chave,
           value: bloqueado ? null : parsed,
           status: bloqueado ? 'BLOQUEADO' : (parsed === null ? 'NULL' : 'OK'),
           reason: bloqueado
             ? (String(r.reason || '').trim() || 'PARAMETRO_BLOQUEADO')
-            : (parsed === null ? 'PARAMETRO_SEM_VALOR' : null),
+            : (parsed === null
+              ? (competenciaFormatoInvalido ? 'COMPETENCIA_INICIAL_FORMATO_INVALIDO' : 'PARAMETRO_SEM_VALOR')
+              : null),
           tipo: tipo,
           unidade: r.unidade || null,
           versao: parseNumber(r.versao) || 1

@@ -80,6 +80,24 @@ describe('Datas', () => {
   it('conta meses entre competências', () => {
     assert.equal(FOS.Dates.monthsBetween('2026-01', '2026-06'), 5);
   });
+
+  it('parseCompetencia tolera YYYY-MM e YYYY-MM-DD, nunca lança', { scenario: 'C56' }, () => {
+    assert.equal(FOS.Dates.parseCompetencia('2026-08'), '2026-08');
+    assert.equal(FOS.Dates.parseCompetencia('2026-08-01'), '2026-08',
+      'a forma que o Sheets produz quando interpreta "2026-08" como data');
+    assert.equal(FOS.Dates.parseCompetencia('2026-08-15'), '2026-08',
+      'qualquer dia do mês deriva a mesma competência, não só o dia 01');
+    assert.equal(FOS.Dates.parseCompetencia('2026-08-31'), '2026-08');
+    assert.isNull(FOS.Dates.parseCompetencia(''));
+    assert.isNull(FOS.Dates.parseCompetencia(null));
+    assert.isNull(FOS.Dates.parseCompetencia(undefined));
+    assert.isNull(FOS.Dates.parseCompetencia('AGOSTO/2026'), 'texto livre não é adivinhado');
+    assert.isNull(FOS.Dates.parseCompetencia('2026-13'), 'mês fora do intervalo 1-12');
+    assert.isNull(FOS.Dates.parseCompetencia('2026-02-30'), 'data completa mas inexistente');
+    assert.isNull(FOS.Dates.parseCompetencia(46600), 'número de série bruto de planilha não é aceito');
+    assert.isNull(FOS.Dates.parseCompetencia(new Date(2026, 7, 1)),
+      'só string — um Date não normalizado não deve ser adivinhado aqui');
+  });
 });
 
 describe('Normalização', () => {
@@ -147,6 +165,74 @@ describe('Configuração (aba 00)', () => {
 
     assert.equal(config.contasPorUniverso('TRADING').length, 4);
   });
+});
+
+describe('Competência inicial: fronteira YYYY-MM sobrevive à conversão do Sheets', () => {
+  function configComCompetenciaInicial(valorBruto, tipo) {
+    const rows = FOS.App.Seed.configRows().concat([{
+      secao: 'PARAMETRO', chave: 'COMPETENCIA_INICIAL_CAIXA_VIDA', valor: valorBruto,
+      tipo: tipo || 'TEXTO', status: 'ATIVO'
+    }]);
+    return FOS.Config.build(rows);
+  }
+
+  it('chave correta com YYYY-MM permanece correta', { scenario: 'C56' }, () => {
+    const config = configComCompetenciaInicial('2026-08');
+    assert.equal(config.param('COMPETENCIA_INICIAL_CAIXA_VIDA').value, '2026-08');
+    assert.equal(config.param('COMPETENCIA_INICIAL_CAIXA_VIDA').status, 'OK');
+  });
+
+  it('valor vindo como YYYY-MM-DD vira YYYY-MM', { scenario: 'C56' }, () => {
+    const config = configComCompetenciaInicial('2026-08-01');
+    const p = config.param('COMPETENCIA_INICIAL_CAIXA_VIDA');
+    assert.equal(p.value, '2026-08');
+    assert.equal(p.status, 'OK');
+  });
+
+  it('valor irreconhecível vira null com reason específico', { scenario: 'C56' }, () => {
+    const config = configComCompetenciaInicial('AGOSTO/2026');
+    const p = config.param('COMPETENCIA_INICIAL_CAIXA_VIDA');
+    assert.isNull(p.value);
+    assert.equal(p.status, 'NULL');
+    assert.equal(p.reason, 'COMPETENCIA_INICIAL_FORMATO_INVALIDO');
+  });
+
+  it('valor ausente continua com o reason genérico de sempre', { scenario: 'C56' }, () => {
+    const config = configComCompetenciaInicial('');
+    const p = config.param('COMPETENCIA_INICIAL_CAIXA_VIDA');
+    assert.isNull(p.value);
+    assert.equal(p.reason, 'PARAMETRO_SEM_VALOR');
+  });
+
+  it('demais parâmetros TEXTO não sofrem nenhuma alteração de comportamento', { scenario: 'C56' }, () => {
+    const config = FOS.Config.build(FOS.App.Seed.configRows());
+    assert.equal(config.param('MOEDA_GERENCIAL').value, 'BRL');
+    assert.equal(config.param('POLITICA_TAXA_CAMBIO').value, 'MANUAL');
+    assert.equal(config.param('CONTA_RESERVA_TRADING_BRL').value, 'RESERVA_BANCA_BRL');
+  });
+
+  it('caixaVida inclui movimento do próprio mês de abertura quando a competência é válida',
+    { scenario: 'C56' }, () => {
+      const config = FOS.Config.build(FOS.App.Seed.configRows());
+      const linhas = [{
+        linha_id: 'L1', fingerprint: 'fp1', versao_gerencial: 1,
+        data_origem: '2026-01-15', valor_origem: 500, conta_id: 'INTER_CC'
+      }];
+      const caixa = FOS.Life.caixaVida(config, linhas, '2026-01');
+      assert.ok(FOS.Core.isOk(caixa));
+      assert.equal(caixa.value, 10500, '10000 (saldo inicial) + 500 do próprio mês de abertura');
+    });
+
+  it('caixaVida falha explícito (fail-closed) quando a competência inicial está ausente ou inválida',
+    { scenario: 'C56' }, () => {
+      ['', 'AGOSTO/2026'].forEach((bruto) => {
+        const config = configComCompetenciaInicial(bruto);
+        const caixa = FOS.Life.caixaVida(config, [], '2026-01');
+        assert.notOk(FOS.Core.isOk(caixa), 'bruto=' + JSON.stringify(bruto));
+        assert.isNull(caixa.value);
+        assert.ok(caixa.reason, 'precisa vir com motivo explícito, nunca calcular em silêncio');
+      });
+    });
 });
 
 describe('Schema das abas', () => {

@@ -28,10 +28,16 @@
       return FOS.Core.nullValue(saldoInicial.reason || 'SALDO_INICIAL_INDISPONIVEL');
     }
     var compInicial = config.param(PARAM_COMPETENCIA_INICIAL);
+    if (compInicial.value === null) {
+      // Fail-closed, não fail-open: sem uma fronteira de abertura confiável
+      // (ausente, ou num formato que Config.build não conseguiu normalizar
+      // para YYYY-MM), "contar tudo" e "não contar nada" são igualmente um
+      // chute. O mesmo código que os outros consumidores deste parâmetro já
+      // usam para o mesmo caso.
+      return FOS.Core.nullValue(compInicial.reason || 'COMPETENCIA_INICIAL_INDISPONIVEL');
+    }
     var relevantes = linhasAte(linhas, competencia).filter(function (l) {
-      if (compInicial.value && FOS.Dates.competenciaOf(String(l.data_origem)) < String(compInicial.value)) {
-        return false;
-      }
+      if (FOS.Dates.competenciaOf(String(l.data_origem)) < compInicial.value) return false;
       var conta = config.conta(l.conta_id);
       return conta && conta.universo === C.UNIVERSO.VIDA;
     });

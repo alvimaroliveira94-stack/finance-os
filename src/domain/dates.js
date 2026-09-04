@@ -57,11 +57,34 @@
     return iso.slice(0, 7);
   }
 
+  function competenciaValida(comp) {
+    return typeof comp === 'string' && COMPETENCIA.test(comp)
+      && Number(comp.slice(5, 7)) >= 1 && Number(comp.slice(5, 7)) <= 12;
+  }
+
   function assertCompetencia(comp) {
-    if (typeof comp !== 'string' || !COMPETENCIA.test(comp) || Number(comp.slice(5, 7)) < 1 || Number(comp.slice(5, 7)) > 12) {
+    if (!competenciaValida(comp)) {
       FOS.Core.fail('COMPETENCIA_INVALIDA', 'Competência inválida: ' + comp);
     }
     return comp;
+  }
+
+  /**
+   * Deriva competência (YYYY-MM) de um valor bruto de célula, tolerando as
+   * duas formas que a MESMA competência pode chegar de uma planilha real:
+   * o texto "YYYY-MM" digitado, ou "YYYY-MM-DD" — o Sheets interpretou o
+   * texto como data (célula formatada Date) e o adaptador (normalizarCelula)
+   * devolveu a data completa, nunca só o mês. Nunca lança: para qualquer
+   * outro formato — texto livre, número de série bruto de planilha, vazio —
+   * devolve null. Não adivinha: um valor ambíguo é decisão do consumidor
+   * (falhar fechado), não deste helper.
+   */
+  function parseCompetencia(bruto) {
+    if (typeof bruto !== 'string') return null;
+    var texto = bruto.trim();
+    if (competenciaValida(texto)) return texto;
+    if (isIso(texto)) return texto.slice(0, 7);
+    return null;
   }
 
   function competenciaRange(comp) {
@@ -105,6 +128,7 @@
     diffDays: diffDays,
     competenciaOf: competenciaOf,
     assertCompetencia: assertCompetencia,
+    parseCompetencia: parseCompetencia,
     competenciaRange: competenciaRange,
     addMonths: addMonths,
     monthsBetween: monthsBetween,

@@ -299,11 +299,34 @@
     return iso.slice(0, 7);
   }
 
+  function competenciaValida(comp) {
+    return typeof comp === 'string' && COMPETENCIA.test(comp)
+      && Number(comp.slice(5, 7)) >= 1 && Number(comp.slice(5, 7)) <= 12;
+  }
+
   function assertCompetencia(comp) {
-    if (typeof comp !== 'string' || !COMPETENCIA.test(comp) || Number(comp.slice(5, 7)) < 1 || Number(comp.slice(5, 7)) > 12) {
+    if (!competenciaValida(comp)) {
       FOS.Core.fail('COMPETENCIA_INVALIDA', 'Competência inválida: ' + comp);
     }
     return comp;
+  }
+
+  /**
+   * Deriva competência (YYYY-MM) de um valor bruto de célula, tolerando as
+   * duas formas que a MESMA competência pode chegar de uma planilha real:
+   * o texto "YYYY-MM" digitado, ou "YYYY-MM-DD" — o Sheets interpretou o
+   * texto como data (célula formatada Date) e o adaptador (normalizarCelula)
+   * devolveu a data completa, nunca só o mês. Nunca lança: para qualquer
+   * outro formato — texto livre, número de série bruto de planilha, vazio —
+   * devolve null. Não adivinha: um valor ambíguo é decisão do consumidor
+   * (falhar fechado), não deste helper.
+   */
+  function parseCompetencia(bruto) {
+    if (typeof bruto !== 'string') return null;
+    var texto = bruto.trim();
+    if (competenciaValida(texto)) return texto;
+    if (isIso(texto)) return texto.slice(0, 7);
+    return null;
   }
 
   function competenciaRange(comp) {
@@ -347,6 +370,7 @@
     diffDays: diffDays,
     competenciaOf: competenciaOf,
     assertCompetencia: assertCompetencia,
+    parseCompetencia: parseCompetencia,
     competenciaRange: competenciaRange,
     addMonths: addMonths,
     monthsBetween: monthsBetween,
@@ -986,13 +1010,29 @@
           else if (tipo === 'BOOLEANO') parsed = parseBool(r.valor);
           else parsed = (r.valor === undefined || r.valor === null || r.valor === '') ? null : String(r.valor);
         }
+        // COMPETENCIA_INICIAL_CAIXA_VIDA é a única chave com contrato de
+        // competência (YYYY-MM). O Google Sheets pode ter formatado a
+        // célula como Date (usuário digitou "2026-08", o Sheets guardou 1º
+        // de agosto), e o adaptador devolve "YYYY-MM-DD" nesse caso.
+        // Normalizado aqui, uma única vez: nenhum consumidor de
+        // config.param('COMPETENCIA_INICIAL_CAIXA_VIDA') precisa saber que
+        // isso pode acontecer — a partir daqui .value é sempre YYYY-MM
+        // válido ou null. Não migra a célula, não muda o tipo declarado.
+        var competenciaFormatoInvalido = false;
+        if (chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA' && !bloqueado && parsed !== null) {
+          var competenciaNormalizada = FOS.Dates.parseCompetencia(parsed);
+          competenciaFormatoInvalido = competenciaNormalizada === null;
+          parsed = competenciaNormalizada;
+        }
         parametros[chave] = {
           chave: chave,
           value: bloqueado ? null : parsed,
           status: bloqueado ? 'BLOQUEADO' : (parsed === null ? 'NULL' : 'OK'),
           reason: bloqueado
             ? (String(r.reason || '').trim() || 'PARAMETRO_BLOQUEADO')
-            : (parsed === null ? 'PARAMETRO_SEM_VALOR' : null),
+            : (parsed === null
+              ? (competenciaFormatoInvalido ? 'COMPETENCIA_INICIAL_FORMATO_INVALIDO' : 'PARAMETRO_SEM_VALOR')
+              : null),
           tipo: tipo,
           unidade: r.unidade || null,
           versao: parseNumber(r.versao) || 1
@@ -2706,17 +2746,26 @@
     // NOVO_PASSIVO (com o portão de conciliação) já faz. Sem essa fronteira,
     // o tipo viraria um bypass permanente daquele portão.
     if (s.exigeFronteiraAbertura) {
-      var competenciaInicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value;
+      // config.param já devolve a competência normalizada (YYYY-MM) ou
+      // null — Config.build normaliza esta chave uma única vez (o Sheets
+      // pode ter guardado a célula como Date, e o adaptador devolve
+      // YYYY-MM-DD nesse caso; ver FOS.Dates.parseCompetencia). Revalidado
+      // aqui de novo com o mesmo helper, tolerante e nunca lança: validar()
+      // não pode lançar por causa de como o config chegou até aqui — nunca
+      // se chama competenciaRange() direto sobre o valor bruto.
+      var competenciaInicial = FOS.Dates.parseCompetencia(
+        config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value
+      );
       if (!competenciaInicial) {
         // Falha fechada, não aberta: sem saber onde a abertura termina, não
         // há como provar que a data está dentro dela — e "não sei" não pode
         // virar "permitido".
         erros.push({
           codigo: 'COMPETENCIA_INICIAL_INDISPONIVEL',
-          detalhe: 'sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' não há como validar a fronteira de abertura'
+          detalhe: 'sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' válida não há como validar a fronteira de abertura'
         });
       } else if (FOS.Dates.isIso(String(evento.data))) {
-        var fimAbertura = FOS.Dates.competenciaRange(String(competenciaInicial)).fim;
+        var fimAbertura = FOS.Dates.competenciaRange(competenciaInicial).fim;
         if (FOS.Dates.diffDays(String(evento.data), fimAbertura) > 0) {
           erros.push({
             codigo: 'SALDO_INICIAL_FORA_DA_ABERTURA',
@@ -3989,10 +4038,16 @@
       return FOS.Core.nullValue(saldoInicial.reason || 'SALDO_INICIAL_INDISPONIVEL');
     }
     var compInicial = config.param(PARAM_COMPETENCIA_INICIAL);
+    if (compInicial.value === null) {
+      // Fail-closed, não fail-open: sem uma fronteira de abertura confiável
+      // (ausente, ou num formato que Config.build não conseguiu normalizar
+      // para YYYY-MM), "contar tudo" e "não contar nada" são igualmente um
+      // chute. O mesmo código que os outros consumidores deste parâmetro já
+      // usam para o mesmo caso.
+      return FOS.Core.nullValue(compInicial.reason || 'COMPETENCIA_INICIAL_INDISPONIVEL');
+    }
     var relevantes = linhasAte(linhas, competencia).filter(function (l) {
-      if (compInicial.value && FOS.Dates.competenciaOf(String(l.data_origem)) < String(compInicial.value)) {
-        return false;
-      }
+      if (FOS.Dates.competenciaOf(String(l.data_origem)) < compInicial.value) return false;
       var conta = config.conta(l.conta_id);
       return conta && conta.universo === C.UNIVERSO.VIDA;
     });
@@ -7417,10 +7472,23 @@
      * não foram fechadas. Só conta a partir de COMPETENCIA_INICIAL_CAIXA_VIDA,
      * para que histórico importado de antes do início do sistema não bloqueie
      * nada para sempre.
+     *
+     * Fail-closed: sem essa fronteira (ausente, ou em formato que
+     * Config.build não normalizou para YYYY-MM), não há como decidir com
+     * segurança se um mês anterior está pendente — fechar apoiado nisso
+     * seria construir sobre uma ordem que ninguém confirmou. Por isso esta
+     * função lança em vez de seguir sem filtro.
      */
     function competenciasAnterioresEmAberto(competencia) {
       var config = repo.config();
-      var inicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value;
+      var compInicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL);
+      if (compInicial.value === null) {
+        FOS.Core.fail('COMPETENCIA_INICIAL_INDISPONIVEL',
+          'Sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' válida não é possível '
+            + 'determinar competências anteriores em aberto.',
+          { reason: compInicial.reason });
+      }
+      var inicial = compInicial.value;
       var fechadas = {};
       competenciasFechadas().forEach(function (c) { fechadas[c] = true; });
 
@@ -7428,7 +7496,7 @@
       FOS.Ledger.visaoCorrente(repo.ledger()).forEach(function (l) {
         var comp = FOS.Dates.competenciaOf(String(l.data_origem));
         if (comp >= String(competencia)) return;
-        if (inicial && comp < String(inicial)) return;
+        if (comp < inicial) return;
         if (fechadas[comp]) return;
         comMovimento[comp] = true;
       });

@@ -112,6 +112,40 @@ describe('Fronteira de datas do Google Sheets', () => {
     assert.equal(FOS.Adapters.normalizarCelula(new Date(2026, 8, 1), {}), '2026-09-01');
     assert.equal(FOS.Adapters.normalizarCelula(comoCelulaDoSheets('2026-09-01'), {}), '2026-09-01');
   });
+
+  /**
+   * Mesma fronteira, agora num parâmetro com contrato "YYYY-MM"
+   * (COMPETENCIA_INICIAL_CAIXA_VIDA), não "YYYY-MM-DD": o Sheets pode ter
+   * interpretado "2026-08" digitado como data e guardado 1º de agosto — o
+   * adaptador entrega a data completa, igual entregaria para qualquer outra
+   * coluna de data. O round-trip passa pelo adaptador real
+   * (FOS.Adapters.criarPlanilha), não por uma string injetada direto.
+   */
+  it('COMPETENCIA_INICIAL_CAIXA_VIDA sobrevive à conversão Date do Sheets até virar YYYY-MM no Config',
+    { scenario: 'C56' }, () => {
+      // Meia-noite de 01/08/2026 em São Paulo — o que o Sheets devolveria
+      // para uma célula que interpretou "2026-08" como data.
+      const celula = new Date(Date.UTC(2026, 7, 1, 3, 0, 0));
+      const planilha = FOS.Adapters.criarPlanilha(
+        spreadsheetStub(
+          ['secao', 'chave', 'valor', 'tipo', 'status'],
+          [['PARAMETRO', 'COMPETENCIA_INICIAL_CAIXA_VIDA', celula, 'TEXTO', 'ATIVO']]
+        ),
+        { fusoHorario: 'America/Sao_Paulo', formatarData: formatadorDeFuso(-180) }
+      );
+
+      // Prova, sem pular o adaptador, que ele já entrega a data completa —
+      // é exatamente aqui que o smoke real encontrou "2026-08-01".
+      const linha = planilha.lerTabela('00_CONFIG_PARAMETROS')[0];
+      assert.equal(linha.valor, '2026-08-01');
+
+      // Config.build é o ponto único de normalização: a partir daqui, o
+      // valor final para esta chave precisa já estar em YYYY-MM.
+      const config = FOS.Config.build([linha]);
+      const p = config.param('COMPETENCIA_INICIAL_CAIXA_VIDA');
+      assert.equal(p.value, '2026-08');
+      assert.equal(p.status, 'OK');
+    });
 });
 
 describe('Resolver pendência com datas vindas do Sheets', () => {

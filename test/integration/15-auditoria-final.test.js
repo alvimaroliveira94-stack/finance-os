@@ -10,7 +10,7 @@ const path = require('path');
 const vm = require('vm');
 const FOS = require('../_load');
 const dataset = require('../fixtures/dataset');
-const { urlFetchFake } = require('../fixtures/fakes');
+const { urlFetchFake, corromperParametroComoDateDoSheets } = require('../fixtures/fakes');
 const { DESTINO } = require('../../tools/build');
 
 const A = FOS.Constants.ABAS_INTERNAS;
@@ -141,6 +141,104 @@ describe('Ordem temporal dos fechamentos', () => {
     assert.deep(ctx.workflows.competenciasAnterioresEmAberto('2026-01'), [],
       'dezembro/2025 está antes da competência inicial configurada');
     assert.ok(ctx.workflows.fecharCompetencia('2026-01').validacao.ok);
+  });
+});
+
+/**
+ * Regressão do smoke real: COMPETENCIA_INICIAL_CAIXA_VIDA é a única chave
+ * com contrato "YYYY-MM" guardada como TEXTO — se a célula real foi
+ * interpretada pelo Sheets como data (usuário digitou "2026-08", o Sheets
+ * guardou 1º de agosto), o adaptador devolve "2026-08-01". Antes desta
+ * correção: `caixaVida` excluía silenciosamente o próprio mês de abertura
+ * (comparação de string tratava "2026-08" como "antes" de "2026-08-01"), e
+ * `competenciasAnterioresEmAberto` deixava de listar agosto como pendente,
+ * permitindo fechar setembro fora de ordem sem nenhum aviso.
+ */
+describe('Competência inicial corrompida pelo Sheets (Date em vez de YYYY-MM)', () => {
+  function corSalarioAgosto(ctx) {
+    ctx.workflows.importarExtrato({
+      contaId: 'INTER_CC', nomeArquivo: 'ago.csv',
+      conteudo: 'data;descricao;valor\n05/08/2026;SALARIO AGOSTO;5000,00'
+    });
+    FOS.Queue.abertos(ctx.repositorio.fila()).forEach((i) => {
+      ctx.workflows.resolverItemFila({
+        item_id: i.item_id, decisao: 'CLASSIFICAR', categoria: 'CUSTO_VIDA', ator: 'TESTE'
+      });
+    });
+  }
+
+  it('agosto com movimento bloqueia fechar setembro, mesmo com a célula chegando como Date',
+    { scenario: 'C56' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-08-20T12:00:00Z' });
+      corromperParametroComoDateDoSheets(ctx.planilha, 'COMPETENCIA_INICIAL_CAIXA_VIDA', new Date(2026, 7, 1));
+      corSalarioAgosto(ctx);
+
+      const erro = assert.throws(() => ctx.workflows.fecharCompetencia('2026-09'),
+        'COMPETENCIA_ANTERIOR_EM_ABERTO');
+      assert.includes(erro.message, '2026-08');
+      assert.equal(ctx.repositorio.fechamentos().length, 0, 'nada pode ser gravado fora de ordem');
+    });
+
+  it('caixa de vida do próprio mês de abertura não é excluído quando a célula chegou como Date',
+    { scenario: 'C56' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-08-20T12:00:00Z' });
+      corromperParametroComoDateDoSheets(ctx.planilha, 'COMPETENCIA_INICIAL_CAIXA_VIDA', new Date(2026, 7, 1));
+      corSalarioAgosto(ctx);
+
+      const r = ctx.workflows.fecharCompetencia('2026-08');
+      assert.ok(r.validacao.ok, JSON.stringify(r.validacao.violacoes));
+      assert.equal(r.snapshot.vida.caixa_vida_brl.value, 15000,
+        '10000 (saldo inicial) + 5000: agosto não pode sumir do caixa de vida');
+    });
+
+  it('mês seguinte ao de abertura continua incluído normalmente', { scenario: 'C56' }, () => {
+    const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-08-20T12:00:00Z' });
+    corromperParametroComoDateDoSheets(ctx.planilha, 'COMPETENCIA_INICIAL_CAIXA_VIDA', new Date(2026, 7, 1));
+    corSalarioAgosto(ctx);
+    ctx.workflows.importarExtrato({
+      contaId: 'INTER_CC', nomeArquivo: 'set.csv',
+      conteudo: 'data;descricao;valor\n05/09/2026;SALARIO SETEMBRO;5000,00'
+    });
+    FOS.Queue.abertos(ctx.repositorio.fila()).forEach((i) => {
+      ctx.workflows.resolverItemFila({
+        item_id: i.item_id, decisao: 'CLASSIFICAR', categoria: 'CUSTO_VIDA', ator: 'TESTE'
+      });
+    });
+
+    ctx.workflows.fecharCompetencia('2026-08');
+    const set = ctx.workflows.fecharCompetencia('2026-09');
+    assert.ok(set.validacao.ok, JSON.stringify(set.validacao.violacoes));
+    assert.equal(set.snapshot.vida.caixa_vida_brl.value, 20000,
+      '10000 + 5000 (agosto) + 5000 (setembro): mês seguinte nunca foi afetado por este bug');
+  });
+
+  it('competência inicial ausente bloqueia fechamento explicitamente, nunca em silêncio',
+    { scenario: 'C56' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-08-20T12:00:00Z' });
+      ctx.repositorio.substituir(A.CONFIG, ctx.repositorio.configLinhas()
+        .filter((r) => r.chave !== 'COMPETENCIA_INICIAL_CAIXA_VIDA'));
+
+      const erro = assert.throws(() => ctx.workflows.fecharCompetencia('2026-08'),
+        'COMPETENCIA_INICIAL_INDISPONIVEL');
+      assert.ok(erro.message.length > 0);
+      assert.equal(ctx.repositorio.fechamentos().length, 0);
+    });
+
+  it('competência inicial em formato irreconhecível bloqueia fechamento explicitamente',
+    { scenario: 'C56' }, () => {
+      const ctx = dataset.montarWorkbook({ comDados: false, agora: '2026-08-20T12:00:00Z' });
+      ctx.repositorio.substituir(A.CONFIG, ctx.repositorio.configLinhas().map((r) => (
+        r.chave === 'COMPETENCIA_INICIAL_CAIXA_VIDA' ? Object.assign({}, r, { valor: 'AGOSTO/2026' }) : r
+      )));
+
+      assert.throws(() => ctx.workflows.fecharCompetencia('2026-08'), 'COMPETENCIA_INICIAL_INDISPONIVEL');
+    });
+
+  it('comportamento válido anterior (sem corrupção) permanece exatamente o mesmo', { scenario: 'C56' }, () => {
+    const ctx = dataset.workbookComMovimento();
+    ctx.workflows.materializarEventos();
+    const r = ctx.workflows.fecharCompetencia('2026-01');
+    assert.ok(r.validacao.ok, JSON.stringify(r.validacao.violacoes));
   });
 });
 

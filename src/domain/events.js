@@ -195,17 +195,26 @@
     // NOVO_PASSIVO (com o portão de conciliação) já faz. Sem essa fronteira,
     // o tipo viraria um bypass permanente daquele portão.
     if (s.exigeFronteiraAbertura) {
-      var competenciaInicial = config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value;
+      // config.param já devolve a competência normalizada (YYYY-MM) ou
+      // null — Config.build normaliza esta chave uma única vez (o Sheets
+      // pode ter guardado a célula como Date, e o adaptador devolve
+      // YYYY-MM-DD nesse caso; ver FOS.Dates.parseCompetencia). Revalidado
+      // aqui de novo com o mesmo helper, tolerante e nunca lança: validar()
+      // não pode lançar por causa de como o config chegou até aqui — nunca
+      // se chama competenciaRange() direto sobre o valor bruto.
+      var competenciaInicial = FOS.Dates.parseCompetencia(
+        config.param(FOS.Life.PARAM_COMPETENCIA_INICIAL).value
+      );
       if (!competenciaInicial) {
         // Falha fechada, não aberta: sem saber onde a abertura termina, não
         // há como provar que a data está dentro dela — e "não sei" não pode
         // virar "permitido".
         erros.push({
           codigo: 'COMPETENCIA_INICIAL_INDISPONIVEL',
-          detalhe: 'sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' não há como validar a fronteira de abertura'
+          detalhe: 'sem ' + FOS.Life.PARAM_COMPETENCIA_INICIAL + ' válida não há como validar a fronteira de abertura'
         });
       } else if (FOS.Dates.isIso(String(evento.data))) {
-        var fimAbertura = FOS.Dates.competenciaRange(String(competenciaInicial)).fim;
+        var fimAbertura = FOS.Dates.competenciaRange(competenciaInicial).fim;
         if (FOS.Dates.diffDays(String(evento.data), fimAbertura) > 0) {
           erros.push({
             codigo: 'SALDO_INICIAL_FORA_DA_ABERTURA',

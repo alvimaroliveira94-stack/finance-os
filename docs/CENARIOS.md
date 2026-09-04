@@ -61,6 +61,7 @@ HTML do painel; `npm run qa:visual` complementa medindo em Chromium headless.
 | C53 | Calibração: a regra nasce da decisão, com escopo exato e persistência conquistada | 3 (operação) |
 | C54 | Passivo mínimo: obrigação com terceiro, recebido ≠ devido, sem contaminar patrimônio | 3 (operação) |
 | C55 | Passivo brownfield: saldo inicial pré-existente e correção administrativa sem movimentar caixa | 3 (operação) |
+| C56 | Competência inicial: fronteira YYYY-MM sobrevive à conversão Date do Sheets, fail-closed quando ausente/inválida | 3 (operação) |
 
 Para ver a matriz com o resultado atual de cada cenário:
 

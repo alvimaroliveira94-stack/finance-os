@@ -378,6 +378,66 @@ verdade. Reescrever esse enum documental exigiria um mecanismo de
 re-seed que hoje não existe e que nenhum caso real pede — infraestrutura
 que este ADR delibera não construir agora.
 
+## 14. `COMPETENCIA_INICIAL_CAIXA_VIDA`: o Sheets pode guardá-la como Date, o Config normaliza uma vez
+
+**Contexto.** Um smoke test contra a planilha de produção, exercitando pela
+primeira vez a fronteira temporal do item 13, encontrou
+`DomainError: COMPETENCIA_INVALIDA: Competência inválida: 2026-08-01`.
+Investigação: `COMPETENCIA_INICIAL_CAIXA_VIDA` tem contrato lógico
+`YYYY-MM`, mas é uma célula `TEXTO` livremente digitável — se o usuário
+digita "2026-08", o Google Sheets pode interpretar isso como data e
+guardar 1º de agosto; o adaptador (`normalizarCelula`), que converte
+corretamente qualquer célula `Date` para `YYYY-MM-DD`, não tem como saber
+que esta célula específica deveria ficar em "ano-mês", e devolve a data
+completa. `FOS.Events.validar` (item 13) foi o primeiro consumidor a
+lançar sobre isso — mas não o único afetado: `life.js:caixaVida` e
+`workflows.js:competenciasAnterioresEmAberto` já liam o mesmo valor cru e
+comparavam como string, sem lançar — silenciosamente excluindo o próprio
+mês de abertura do caixa de vida, e permitindo fechar o mês seguinte fora
+de ordem sem o bloqueio `COMPETENCIA_ANTERIOR_EM_ABERTO`.
+
+**Decisão — normalizar uma vez, na fonte, fail-closed nos consumidores.**
+
+1. **Helper canônico.** `FOS.Dates.parseCompetencia(bruto)` — puro, nunca
+   lança — aceita `YYYY-MM` (mantém) e `YYYY-MM-DD`/qualquer ISO completo
+   válido (deriva o mês via `competenciaOf`); qualquer outro formato,
+   vazio, ou tipo diferente de string (incluindo número de série bruto de
+   planilha) devolve `null`. Não adivinha texto livre.
+2. **`Config.build` é o único ponto de normalização.** Só para a chave
+   `COMPETENCIA_INICIAL_CAIXA_VIDA`, o valor bruto passa por
+   `parseCompetencia` antes de virar `.value`. A partir daí,
+   `config.param('COMPETENCIA_INICIAL_CAIXA_VIDA').value` é sempre um
+   `YYYY-MM` válido ou `null` — nenhum consumidor precisa saber que a
+   célula pode ter chegado como Date. Nenhuma migração de célula, nenhuma
+   mudança do `tipo` declarado na planilha.
+3. **Fail-closed nos três consumidores**, decisão humana aprovada:
+   ausência ou formato irreconhecível é erro bloqueante, nunca "contar
+   tudo" nem "não contar nada". `caixaVida` devolve `nullValue` (o mesmo
+   padrão já usado para `SALDO_INICIAL_CAIXA_VIDA_BRL` ausente);
+   `competenciasAnterioresEmAberto` lança `COMPETENCIA_INICIAL_INDISPONIVEL`
+   (recusando fechar apoiado numa fronteira desconhecida — já capturado
+   pelo `try/catch` existente de `fosFecharMes`); `FOS.Events.validar`
+   (`SALDO_INICIAL_PASSIVO`) revalida com o mesmo `parseCompetencia` antes
+   de chamar `competenciaRange`, para nunca lançar de dentro de uma função
+   que o resto do código trata como não-lançante, não importa como o
+   `config` chegou até ali.
+4. **`diagnosticoSetup` não ganhou lógica nova.** Já lia
+   `config.param(chave).value === null` para decidir bloqueio — com a
+   normalização no lugar certo (item 2), esse mesmo teste passa a cobrir
+   corretamente tanto "ausente" quanto "formato irreconhecível", sem
+   segundo mecanismo de validação concorrente.
+
+**Por que não corrigir só em cada consumidor.** Copiar a tolerância de
+formato em `life.js`, `workflows.js` e `events.js` espalharia a mesma
+lógica em três lugares, sem nenhum deles ser dono dela — exatamente o
+oposto de Single Truth Ownership, e o tipo de duplicação que um quarto
+consumidor futuro esqueceria de replicar.
+
+**Custo aceito.** Nenhum. A normalização é transparente: quem já tinha a
+célula digitada como texto puro (`"2026-08"`) não percebe diferença
+nenhuma; quem tem a célula corrompida pelo Sheets passa a funcionar sem
+precisar editá-la.
+
 ---
 
 ## Compatibilidade
